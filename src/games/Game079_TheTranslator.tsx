@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // Game 79 — The Translator
 // A poem in a fictional language. Glossary gives synonym options.
 // Reorder & pick synonyms to produce English that scans and rhymes.
+// Community: after submitting, see other players' translations and upvote favorites.
 
 type Word = { foreign: string; synonyms: string[]; chosen: number };
 
 type Puzzle = {
+	id: string; // stable poem_id
 	title: string;
 	gloss: Array<{ foreign: string; meanings: string[] }>;
 	lines: string[][]; // foreign words per line
@@ -15,6 +17,7 @@ type Puzzle = {
 
 const PUZZLES: Puzzle[] = [
 	{
+		id: "verse-of-stones",
 		title: "Verse of Stones",
 		gloss: [
 			{ foreign: "kel", meanings: ["stone", "rock", "boulder"] },
@@ -36,6 +39,7 @@ const PUZZLES: Puzzle[] = [
 		},
 	},
 	{
+		id: "song-of-wings",
 		title: "Song of Wings",
 		gloss: [
 			{ foreign: "vel", meanings: ["bird", "swallow", "wing"] },
@@ -58,11 +62,77 @@ const PUZZLES: Puzzle[] = [
 	},
 ];
 
+type Entry = {
+	id: number;
+	poem_id: string;
+	text: string;
+	author: string | null;
+	votes: number;
+	created_at: number;
+};
+
+const AUTHOR_KEY = "translator:author";
+const LOCAL_ENTRIES_KEY = "translator:local-entries";
+const LOCAL_VOTES_KEY = "translator:local-votes";
+const API = "/api/translator/translations";
+
+function getOrCreateAuthor(): string {
+	try {
+		const existing = localStorage.getItem(AUTHOR_KEY);
+		if (existing) return existing;
+		const id =
+			"anon-" +
+			Math.random().toString(36).slice(2, 8) +
+			Math.random().toString(36).slice(2, 6);
+		localStorage.setItem(AUTHOR_KEY, id);
+		return id;
+	} catch {
+		return "anon-local";
+	}
+}
+
+function loadLocalEntries(): Entry[] {
+	try {
+		const raw = localStorage.getItem(LOCAL_ENTRIES_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+function saveLocalEntries(entries: Entry[]) {
+	try {
+		localStorage.setItem(LOCAL_ENTRIES_KEY, JSON.stringify(entries.slice(-200)));
+	} catch {
+		/* ignore */
+	}
+}
+
+function loadLocalVotes(): Record<string, true> {
+	try {
+		const raw = localStorage.getItem(LOCAL_VOTES_KEY);
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === "object" ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+function saveLocalVotes(votes: Record<string, true>) {
+	try {
+		localStorage.setItem(LOCAL_VOTES_KEY, JSON.stringify(votes));
+	} catch {
+		/* ignore */
+	}
+}
+
 export default function Game079_TheTranslator() {
 	const [puzzleIdx, setPuzzleIdx] = useState(0);
 	const puzzle = PUZZLES[puzzleIdx];
 
-	// each line is an ordered list of word slots; user can reorder and pick synonyms
 	const [lines, setLines] = useState<Word[][]>(() =>
 		puzzle.lines.map((line) =>
 			line.map((f) => {
@@ -72,6 +142,14 @@ export default function Game079_TheTranslator() {
 		)
 	);
 	const [score, setScore] = useState<number | null>(null);
+
+	const [author] = useState<string>(() => getOrCreateAuthor());
+	const [entries, setEntries] = useState<Entry[]>([]);
+	const [submitted, setSubmitted] = useState(false);
+	const [submitting, setSubmitting] = useState(false);
+	const [offline, setOffline] = useState(false);
+	const [voted, setVoted] = useState<Record<string, true>>(() => loadLocalVotes());
+	const [status, setStatus] = useState<string>("");
 
 	const setSyn = (li: number, wi: number, ci: number) => {
 		setLines((ls) =>
@@ -97,7 +175,6 @@ export default function Game079_TheTranslator() {
 	const englishLines = lines.map((line) => line.map((w) => w.synonyms[w.chosen]).join(" "));
 
 	const evaluate = () => {
-		// crude: reward rhyme (last syllable match) and length similarity
 		const a = englishLines[0];
 		const b = englishLines[englishLines.length - 1];
 		const lastA = a.split(" ").pop()!.toLowerCase();
@@ -107,12 +184,112 @@ export default function Game079_TheTranslator() {
 			englishLines.every((l) => Math.abs(l.split(" ").length - englishLines[0].split(" ").length) < 2)
 				? 30
 				: 10;
-		// reward variety in word choices
 		const variety = lines.reduce(
 			(s, l) => s + l.filter((w) => w.chosen !== 0).length * 2,
 			0
 		);
 		setScore(rhyme + meter + Math.min(20, variety));
+	};
+
+	const fetchEntries = async (poemId: string) => {
+		try {
+			const res = await fetch(`${API}?poem=${encodeURIComponent(poemId)}`);
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = (await res.json()) as { entries?: Entry[] };
+			setEntries(data.entries ?? []);
+			setOffline(false);
+		} catch {
+			// Fallback to local-only entries for this poem.
+			const local = loadLocalEntries().filter((e) => e.poem_id === poemId);
+			local.sort((a, b) => b.votes - a.votes || b.id - a.id);
+			setEntries(local);
+			setOffline(true);
+		}
+	};
+
+	const submit = async () => {
+		if (submitting) return;
+		const text = englishLines.join("\n").trim();
+		if (!text) return;
+		setSubmitting(true);
+		setStatus("");
+		try {
+			const res = await fetch(API, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ poem_id: puzzle.id, text, author }),
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			setOffline(false);
+		} catch {
+			// localStorage fallback
+			const localEntry: Entry = {
+				id: -Date.now(),
+				poem_id: puzzle.id,
+				text,
+				author,
+				votes: 0,
+				created_at: Date.now(),
+			};
+			const all = loadLocalEntries();
+			// Dedupe locally: same author + same poem + same text.
+			if (
+				!all.some(
+					(e) =>
+						e.poem_id === localEntry.poem_id &&
+						e.author === localEntry.author &&
+						e.text === localEntry.text
+				)
+			) {
+				all.push(localEntry);
+				saveLocalEntries(all);
+			}
+			setOffline(true);
+		}
+		setSubmitted(true);
+		setSubmitting(false);
+		await fetchEntries(puzzle.id);
+		setStatus("Translation submitted.");
+	};
+
+	const upvote = async (entry: Entry) => {
+		const key = `${puzzle.id}:${entry.id}`;
+		if (voted[key]) return;
+		// Optimistic
+		setEntries((es) =>
+			es.map((e) => (e.id === entry.id ? { ...e, votes: e.votes + 1 } : e))
+		);
+		const nextVoted = { ...voted, [key]: true as const };
+		setVoted(nextVoted);
+		saveLocalVotes(nextVoted);
+
+		if (entry.id < 0) {
+			// Local-only entry — persist vote in localStorage list.
+			const all = loadLocalEntries().map((e) =>
+				e.id === entry.id ? { ...e, votes: e.votes + 1 } : e
+			);
+			saveLocalEntries(all);
+			return;
+		}
+
+		try {
+			const res = await fetch(API, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "vote", entry_id: entry.id, author }),
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = (await res.json()) as { entry?: Entry };
+			if (data.entry) {
+				setEntries((es) =>
+					es
+						.map((e) => (e.id === data.entry!.id ? data.entry! : e))
+						.sort((a, b) => b.votes - a.votes || b.id - a.id)
+				);
+			}
+		} catch {
+			setOffline(true);
+		}
 	};
 
 	const next = () => {
@@ -127,7 +304,22 @@ export default function Game079_TheTranslator() {
 			)
 		);
 		setScore(null);
+		setSubmitted(false);
+		setEntries([]);
+		setStatus("");
 	};
+
+	// Refresh entries whenever the poem changes after a submission.
+	useEffect(() => {
+		if (submitted) {
+			fetchEntries(puzzle.id);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [puzzle.id, submitted]);
+
+	const sortedEntries = [...entries].sort(
+		(a, b) => b.votes - a.votes || b.id - a.id
+	);
 
 	return (
 		<div
@@ -210,9 +402,12 @@ export default function Game079_TheTranslator() {
 				</div>
 			</div>
 
-			<div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+			<div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
 				<button onClick={evaluate} style={btn}>
 					Score my translation
+				</button>
+				<button onClick={submit} style={btn} disabled={submitting}>
+					{submitting ? "Submitting…" : submitted ? "Resubmit" : "Submit to gallery"}
 				</button>
 				<button onClick={next} style={btn}>
 					Next poem
@@ -221,6 +416,78 @@ export default function Game079_TheTranslator() {
 			{score !== null && (
 				<div style={{ fontSize: 20, marginTop: 12 }}>
 					Score: <b>{score}/100</b>
+				</div>
+			)}
+			{status && (
+				<div style={{ fontSize: 12, marginTop: 6, opacity: 0.8 }}>
+					{status} {offline && "(offline — saved locally)"}
+				</div>
+			)}
+
+			{submitted && (
+				<div style={{ marginTop: 18 }}>
+					<div
+						style={{
+							fontStyle: "italic",
+							opacity: 0.85,
+							borderTop: "1px solid #ffffff22",
+							paddingTop: 10,
+						}}
+					>
+						Other translations of "{puzzle.title}"
+						{offline && " (offline — local only)"}:
+					</div>
+					{sortedEntries.length === 0 && (
+						<div style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
+							No translations yet. Be the first to share one!
+						</div>
+					)}
+					<div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+						{sortedEntries.map((e) => {
+							const key = `${puzzle.id}:${e.id}`;
+							const hasVoted = !!voted[key];
+							const mine = e.author && e.author === author;
+							return (
+								<div
+									key={e.id}
+									style={{
+										background: "#0005",
+										padding: "8px 10px",
+										borderRadius: 6,
+										display: "flex",
+										gap: 10,
+										alignItems: "flex-start",
+									}}
+								>
+									<button
+										onClick={() => upvote(e)}
+										disabled={hasVoted || !!mine}
+										style={{
+											...voteBtn,
+											opacity: hasVoted || mine ? 0.5 : 1,
+											cursor: hasVoted || mine ? "default" : "pointer",
+										}}
+										title={
+											mine
+												? "Your own translation"
+												: hasVoted
+													? "Already upvoted"
+													: "Upvote"
+										}
+									>
+										▲ {e.votes}
+									</button>
+									<div style={{ flex: 1, whiteSpace: "pre-wrap", fontSize: 15 }}>
+										{e.text}
+										<div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+											— {e.author ?? "anon"}
+											{mine && " (you)"}
+										</div>
+									</div>
+								</div>
+							);
+						})}
+					</div>
 				</div>
 			)}
 		</div>
@@ -235,4 +502,13 @@ const mini: React.CSSProperties = {
 	fontSize: 10,
 	padding: "2px 4px",
 	cursor: "pointer",
+};
+const voteBtn: React.CSSProperties = {
+	background: "#403254",
+	color: "#fff",
+	border: "none",
+	borderRadius: 4,
+	padding: "6px 10px",
+	fontSize: 13,
+	minWidth: 56,
 };

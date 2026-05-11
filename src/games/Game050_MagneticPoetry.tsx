@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 // Magnetic Poetry — drag word tiles onto a fridge to form a short poem on today's theme.
+// Poems & upvotes are shared across players via the /api/magnetic-poetry/poems endpoint
+// (Cloudflare D1). Falls back to localStorage if the network is unavailable.
 
 const WORDS = [
 	"moon", "river", "whisper", "stone", "you", "I", "we",
@@ -24,27 +26,90 @@ const THEMES = [
 
 type Tile = { word: string; id: number; x: number; y: number };
 
+type Poem = {
+	id: number;
+	theme: string;
+	text: string;
+	author?: string;
+	votes: number;
+	day?: string;
+	created_at?: number;
+};
+
 const FRIDGE_W = 720;
 const FRIDGE_H = 380;
 const TILE_W = 60;
 const TILE_H = 24;
 
-function themeOfDay(): string {
-	const days = Math.floor(Date.now() / (1000 * 60 * 60 * 24));
-	return THEMES[days % THEMES.length];
+const API = "/api/magnetic-poetry/poems";
+const LS_FALLBACK = "magnetic_poetry_v2";
+const LS_AUTHOR = "magnetic_poetry_author";
+const LS_VOTED = "magnetic_poetry_voted";
+
+function utcDay(): string {
+	return new Date().toISOString().slice(0, 10);
 }
 
-function loadPoems(): { theme: string; text: string; votes: number }[] {
+function themeOfDay(day: string): string {
+	// Stable hash of YYYY-MM-DD to an index in THEMES
+	let h = 0;
+	for (let i = 0; i < day.length; i++) {
+		h = (h * 31 + day.charCodeAt(i)) >>> 0;
+	}
+	return THEMES[h % THEMES.length];
+}
+
+function getAuthorId(): string {
 	try {
-		const v = localStorage.getItem("magnetic_poetry");
-		return v ? JSON.parse(v) : [];
+		let id = localStorage.getItem(LS_AUTHOR);
+		if (!id) {
+			id = `anon-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+			localStorage.setItem(LS_AUTHOR, id);
+		}
+		return id;
+	} catch {
+		return "anon";
+	}
+}
+
+function loadLocal(day: string): Poem[] {
+	try {
+		const raw = localStorage.getItem(LS_FALLBACK);
+		if (!raw) return [];
+		const all = JSON.parse(raw) as Record<string, Poem[]>;
+		return all[day] ?? [];
 	} catch {
 		return [];
 	}
 }
 
-function savePoems(p: { theme: string; text: string; votes: number }[]) {
-	localStorage.setItem("magnetic_poetry", JSON.stringify(p));
+function saveLocal(day: string, poems: Poem[]) {
+	try {
+		const raw = localStorage.getItem(LS_FALLBACK);
+		const all = raw ? (JSON.parse(raw) as Record<string, Poem[]>) : {};
+		all[day] = poems;
+		localStorage.setItem(LS_FALLBACK, JSON.stringify(all));
+	} catch {
+		// ignore
+	}
+}
+
+function loadVotedSet(): Set<number> {
+	try {
+		const raw = localStorage.getItem(LS_VOTED);
+		if (!raw) return new Set();
+		return new Set(JSON.parse(raw) as number[]);
+	} catch {
+		return new Set();
+	}
+}
+
+function saveVotedSet(s: Set<number>) {
+	try {
+		localStorage.setItem(LS_VOTED, JSON.stringify([...s]));
+	} catch {
+		// ignore
+	}
 }
 
 export default function Game050_MagneticPoetry() {
@@ -56,15 +121,42 @@ export default function Game050_MagneticPoetry() {
 			y: FRIDGE_H + 16 + Math.floor(i / 12) * 30,
 		}))
 	);
-	const theme = useRef(themeOfDay()).current;
-	const [poems, setPoems] = useState(() => loadPoems());
+	const day = useRef(utcDay()).current;
+	const theme = useRef(themeOfDay(day)).current;
+	const author = useRef(getAuthorId()).current;
+	const [poems, setPoems] = useState<Poem[]>([]);
+	const [voted, setVoted] = useState<Set<number>>(() => loadVotedSet());
+	const [status, setStatus] = useState<string>("");
 	const draggingId = useRef<number | null>(null);
 	const dragOffset = useRef({ x: 0, y: 0 });
 	const svgRef = useRef<SVGSVGElement>(null);
 
+	// Fetch today's poems from the API, fall back to localStorage on failure.
+	useEffect(() => {
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await fetch(`${API}?day=${encodeURIComponent(day)}`);
+				if (!res.ok) throw new Error(`bad status ${res.status}`);
+				const data = (await res.json()) as { poems: Poem[] };
+				if (cancelled) return;
+				setPoems(data.poems ?? []);
+				saveLocal(day, data.poems ?? []);
+			} catch {
+				if (cancelled) return;
+				setPoems(loadLocal(day));
+				setStatus("offline — using local copy");
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [day]);
+
 	const onTileMouseDown = (e: React.MouseEvent, t: Tile) => {
 		e.preventDefault();
-		const svg = svgRef.current!;
+		const svg = svgRef.current;
+		if (!svg) return;
 		const rect = svg.getBoundingClientRect();
 		dragOffset.current = {
 			x: e.clientX - rect.left - t.x,
@@ -78,7 +170,8 @@ export default function Game050_MagneticPoetry() {
 	useEffect(() => {
 		const onMove = (e: MouseEvent) => {
 			if (draggingId.current == null) return;
-			const svg = svgRef.current!;
+			const svg = svgRef.current;
+			if (!svg) return;
 			const rect = svg.getBoundingClientRect();
 			const x = e.clientX - rect.left - dragOffset.current.x;
 			const y = e.clientY - rect.top - dragOffset.current.y;
@@ -100,7 +193,7 @@ export default function Game050_MagneticPoetry() {
 	const tilesOnFridge = tiles.filter((t) => t.y < FRIDGE_H);
 
 	const buildPoem = () => {
-		// Group tiles by row (within ~26px), sort by x within row
+		// Group tiles by row (within ~22px), sort by x within row
 		const sorted = [...tilesOnFridge].sort((a, b) => a.y - b.y);
 		const rows: Tile[][] = [];
 		for (const t of sorted) {
@@ -118,24 +211,74 @@ export default function Game050_MagneticPoetry() {
 			.join("\n");
 	};
 
-	const submit = () => {
+	const submit = async () => {
 		const text = buildPoem();
 		if (!text.trim()) return;
-		const updated = [...poems, { theme, text, votes: 0 }];
-		setPoems(updated);
-		savePoems(updated);
+		setStatus("submitting…");
+		try {
+			const res = await fetch(API, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ theme, text, author, day }),
+			});
+			if (!res.ok) throw new Error(`bad status ${res.status}`);
+			const created = (await res.json()) as Poem;
+			const next = [created, ...poems];
+			setPoems(next);
+			saveLocal(day, next);
+			setStatus("posted");
+		} catch {
+			// Local fallback: synthesize an id so React keys/votes still work
+			const fallback: Poem = {
+				id: -Date.now(),
+				theme,
+				text,
+				author,
+				votes: 0,
+				day,
+				created_at: Date.now(),
+			};
+			const next = [fallback, ...poems];
+			setPoems(next);
+			saveLocal(day, next);
+			setStatus("offline — saved locally");
+		}
 	};
 
-	const vote = (idx: number, delta: number) => {
-		const updated = poems.map((p, i) => (i === idx ? { ...p, votes: p.votes + delta } : p));
-		setPoems(updated);
-		savePoems(updated);
+	const upvote = async (poem: Poem) => {
+		if (voted.has(poem.id)) return;
+		// Optimistic update
+		const next = poems.map((p) =>
+			p.id === poem.id ? { ...p, votes: p.votes + 1 } : p,
+		);
+		setPoems(next);
+		const newVoted = new Set(voted);
+		newVoted.add(poem.id);
+		setVoted(newVoted);
+		saveVotedSet(newVoted);
+		saveLocal(day, next);
+
+		if (poem.id < 0) return; // local-only poem, no server vote
+		try {
+			const res = await fetch(API, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "vote", poem_id: poem.id, author }),
+			});
+			if (!res.ok) throw new Error(`bad status ${res.status}`);
+			const data = (await res.json()) as { id: number; votes: number };
+			// Reconcile with server count
+			const synced = next.map((p) =>
+				p.id === data.id ? { ...p, votes: data.votes } : p,
+			);
+			setPoems(synced);
+			saveLocal(day, synced);
+		} catch {
+			setStatus("offline — vote saved locally");
+		}
 	};
 
-	const themesPoems = poems
-		.map((p, i) => ({ ...p, _i: i }))
-		.filter((p) => p.theme === theme)
-		.sort((a, b) => b.votes - a.votes);
+	const sorted = [...poems].sort((a, b) => b.votes - a.votes);
 
 	return (
 		<div
@@ -156,6 +299,9 @@ export default function Game050_MagneticPoetry() {
 			<h2 style={{ margin: 4 }}>Magnetic Poetry</h2>
 			<div style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>
 				Drag tiles onto the fridge. Today's theme: <em>{theme}</em>
+				{status && (
+					<span style={{ marginLeft: 8, opacity: 0.6 }}>· {status}</span>
+				)}
 			</div>
 			<svg
 				ref={svgRef}
@@ -196,34 +342,43 @@ export default function Game050_MagneticPoetry() {
 			</div>
 			<div style={{ marginTop: 14, width: "100%", maxWidth: FRIDGE_W }}>
 				<strong>Community ({theme}):</strong>
-				{themesPoems.length === 0 && (
+				{sorted.length === 0 && (
 					<div style={{ opacity: 0.6, fontSize: 13 }}>No poems yet. Be the first.</div>
 				)}
-				{themesPoems.map((p) => (
-					<div
-						key={p._i}
-						style={{
-							background: "#fffdf3",
-							border: "1px solid #ccc",
-							borderRadius: 6,
-							padding: 8,
-							margin: "6px 0",
-							whiteSpace: "pre-wrap",
-							fontFamily: "Georgia, serif",
-						}}
-					>
-						<div style={{ fontStyle: "italic" }}>{p.text}</div>
-						<div style={{ marginTop: 4, fontSize: 12 }}>
-							votes: {p.votes}{" "}
-							<button type="button" onClick={() => vote(p._i, 1)} style={smallBtn}>
-								▲
-							</button>
-							<button type="button" onClick={() => vote(p._i, -1)} style={smallBtn}>
-								▼
-							</button>
+				{sorted.map((p) => {
+					const hasVoted = voted.has(p.id);
+					return (
+						<div
+							key={p.id}
+							style={{
+								background: "#fffdf3",
+								border: "1px solid #ccc",
+								borderRadius: 6,
+								padding: 8,
+								margin: "6px 0",
+								whiteSpace: "pre-wrap",
+								fontFamily: "Georgia, serif",
+							}}
+						>
+							<div style={{ fontStyle: "italic" }}>{p.text}</div>
+							<div style={{ marginTop: 4, fontSize: 12 }}>
+								votes: {p.votes}{" "}
+								<button
+									type="button"
+									onClick={() => upvote(p)}
+									disabled={hasVoted}
+									style={{
+										...smallBtn,
+										opacity: hasVoted ? 0.4 : 1,
+										cursor: hasVoted ? "default" : "pointer",
+									}}
+								>
+									{hasVoted ? "✓" : "▲"}
+								</button>
+							</div>
 						</div>
-					</div>
-				))}
+					);
+				})}
 			</div>
 		</div>
 	);

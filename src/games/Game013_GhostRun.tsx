@@ -2,6 +2,26 @@ import { useEffect, useRef, useState } from "react";
 
 type Frame = { x: number; y: number };
 
+const LEVEL_SEED = "v1:default";
+const API_URL = "/api/ghost-run/runs";
+
+function getAnonId(): string {
+	try {
+		let id = localStorage.getItem("ghostrun_anon_id");
+		if (!id) {
+			const rand =
+				typeof crypto !== "undefined" && crypto.randomUUID
+					? crypto.randomUUID()
+					: Math.random().toString(36).slice(2) + Date.now().toString(36);
+			id = `anon_${rand}`;
+			localStorage.setItem("ghostrun_anon_id", id);
+		}
+		return id;
+	} catch {
+		return "anon";
+	}
+}
+
 const W = 900;
 const H = 500;
 const GROUND = H - 60;
@@ -35,6 +55,7 @@ export default function Game013_GhostRun() {
 	const [, force] = useState(0);
 
 	useEffect(() => {
+		// Always load local best first as a baseline / fallback.
 		const stored = localStorage.getItem("ghostrun_best");
 		if (stored) {
 			try {
@@ -44,6 +65,30 @@ export default function Game013_GhostRun() {
 				stateRef.current.best = data.frames?.length || Infinity;
 			} catch {}
 		}
+		// Then try to fetch the global best ghost from the server.
+		let cancelled = false;
+		(async () => {
+			try {
+				const res = await fetch(`${API_URL}?level=${encodeURIComponent(LEVEL_SEED)}`);
+				if (!res.ok) return;
+				const data = await res.json();
+				const run = data?.run;
+				if (cancelled || !run || !Array.isArray(run.frames) || run.frames.length === 0) return;
+				const globalFrames: Frame[] = run.frames;
+				// Use the global best as the ghost. It's the canonical "best ghost on this level".
+				stateRef.current.ghost = globalFrames;
+				stateRef.current.ghostFinishFrame = globalFrames.length;
+				// Track the local best separately; only beating it triggers an upload.
+				if (globalFrames.length < stateRef.current.best) {
+					// Don't overwrite the player's personal best — just race the global ghost.
+				}
+			} catch {
+				// Network failure — keep localStorage fallback already loaded above.
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
 	}, []);
 
 	useEffect(() => {
@@ -124,9 +169,27 @@ export default function Game013_GhostRun() {
 					s.finishFrame = s.frame;
 					if (s.frame < s.best) {
 						s.best = s.frame;
-						localStorage.setItem("ghostrun_best", JSON.stringify({ frames: s.recording }));
-						s.ghost = s.recording.slice();
-						s.ghostFinishFrame = s.recording.length;
+						const framesSnapshot = s.recording.slice();
+						localStorage.setItem("ghostrun_best", JSON.stringify({ frames: framesSnapshot }));
+						s.ghost = framesSnapshot;
+						s.ghostFinishFrame = framesSnapshot.length;
+						// Submit personal best to server. Fire-and-forget; ignore failures.
+						(async () => {
+							try {
+								await fetch(API_URL, {
+									method: "POST",
+									headers: { "content-type": "application/json" },
+									body: JSON.stringify({
+										level: LEVEL_SEED,
+										finish_ms: s.finishFrame,
+										frames: framesSnapshot,
+										author: getAnonId(),
+									}),
+								});
+							} catch {
+								// offline / unavailable — localStorage still has the run
+							}
+						})();
 					}
 				}
 			}

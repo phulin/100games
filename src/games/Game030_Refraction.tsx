@@ -92,6 +92,65 @@ function traceBeams(level: Level, grid: Cell[][]): Beam[] {
 	return out;
 }
 
+type CommunityLevelMeta = {
+	id: number;
+	title: string;
+	author: string;
+	solves: number;
+	created_at: number;
+};
+
+type SharedGridPayload = {
+	v: 1;
+	w: number;
+	h: number;
+	cells: CellType[][];
+};
+
+function getAnonId(): string {
+	try {
+		const k = "refraction:anon";
+		let id = localStorage.getItem(k);
+		if (!id) {
+			const arr = new Uint8Array(12);
+			crypto.getRandomValues(arr);
+			id = Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+			localStorage.setItem(k, id);
+		}
+		return id;
+	} catch {
+		return "anon";
+	}
+}
+
+function gridToPayload(grid: Cell[][]): SharedGridPayload {
+	return {
+		v: 1,
+		w: GRID_W,
+		h: GRID_H,
+		cells: grid.map((row) => row.map((c) => c.type)),
+	};
+}
+
+function payloadToGrid(p: SharedGridPayload): Cell[][] | null {
+	if (!p || p.v !== 1 || p.w !== GRID_W || p.h !== GRID_H) return null;
+	if (!Array.isArray(p.cells) || p.cells.length !== GRID_H) return null;
+	const ALLOWED: CellType[] = ["empty", "prism", "mirrorNE", "mirrorNW"];
+	const out: Cell[][] = [];
+	for (let y = 0; y < GRID_H; y++) {
+		const row = p.cells[y];
+		if (!Array.isArray(row) || row.length !== GRID_W) return null;
+		const cells: Cell[] = [];
+		for (let x = 0; x < GRID_W; x++) {
+			const t = row[x];
+			if (!ALLOWED.includes(t as CellType)) return null;
+			cells.push({ type: t as CellType });
+		}
+		out.push(cells);
+	}
+	return out;
+}
+
 const TOOLS: { label: string; type: CellType; icon: string }[] = [
 	{ label: "Empty", type: "empty", icon: "·" },
 	{ label: "Prism", type: "prism", icon: "△" },
@@ -109,6 +168,47 @@ export default function Refraction() {
 	const [tool, setTool] = useState<CellType>("prism");
 	const beams = useMemo(() => traceBeams(level, grid), [grid, level]);
 
+	const [community, setCommunity] = useState<CommunityLevelMeta[]>([]);
+	const [shareStatus, setShareStatus] = useState<string>("");
+	const [loadingId, setLoadingId] = useState<number | null>(null);
+	const anonId = useMemo(() => getAnonId(), []);
+
+	useEffect(() => {
+		let cancelled = false;
+		fetch("/api/refraction/levels")
+			.then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+			.then((data: { levels?: CommunityLevelMeta[] }) => {
+				if (!cancelled && Array.isArray(data.levels))
+					setCommunity(data.levels);
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	const loadCommunityLevel = async (id: number) => {
+		setLoadingId(id);
+		try {
+			const r = await fetch(`/api/refraction/levels?id=${id}`);
+			if (!r.ok) throw new Error("fetch failed");
+			const data = (await r.json()) as {
+				level?: { grid?: string };
+			};
+			if (!data.level?.grid) throw new Error("no grid");
+			const parsed = JSON.parse(data.level.grid) as SharedGridPayload;
+			const ng = payloadToGrid(parsed);
+			if (ng) {
+				setGrid(ng);
+				setShareStatus("");
+			}
+		} catch {
+			// silent
+		} finally {
+			setLoadingId(null);
+		}
+	};
+
 	const setCell = (x: number, y: number) => {
 		if (x === level.entry.x && y === level.entry.y) return;
 		if (level.targets.some((t) => t.x === x && t.y === y)) return;
@@ -124,6 +224,45 @@ export default function Refraction() {
 			),
 	);
 	const won = hits.every(Boolean);
+
+	const shareLevel = async () => {
+		if (!won) {
+			setShareStatus("Solve it first to share.");
+			return;
+		}
+		const title = (
+			typeof window !== "undefined"
+				? window.prompt("Title for your level (1-60 chars):", "My Refraction")
+				: null
+		);
+		if (!title) return;
+		const trimmed = title.trim().slice(0, 60);
+		if (!trimmed) {
+			setShareStatus("Title required.");
+			return;
+		}
+		setShareStatus("Sharing...");
+		try {
+			const r = await fetch("/api/refraction/levels", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					title: trimmed,
+					grid: JSON.stringify(gridToPayload(grid)),
+					author: anonId,
+				}),
+			});
+			if (!r.ok) {
+				setShareStatus(`Share failed (${r.status}).`);
+				return;
+			}
+			const created = (await r.json()) as CommunityLevelMeta;
+			setShareStatus("Shared!");
+			setCommunity((c) => [created, ...c].slice(0, 20));
+		} catch {
+			setShareStatus("Share failed.");
+		}
+	};
 
 	const cellSize = 44;
 
@@ -324,6 +463,105 @@ export default function Refraction() {
 					All beams routed!
 				</div>
 			)}
+			<div
+				style={{
+					marginTop: 12,
+					display: "flex",
+					gap: 8,
+					alignItems: "center",
+				}}
+			>
+				<button
+					type="button"
+					onClick={shareLevel}
+					disabled={!won}
+					style={{
+						padding: "6px 12px",
+						background: won ? "#3a7" : "#333",
+						color: "#fff",
+						border: "1px solid #555",
+						borderRadius: 3,
+						cursor: won ? "pointer" : "not-allowed",
+						fontFamily: "monospace",
+						opacity: won ? 1 : 0.6,
+					}}
+					title={
+						won
+							? "Share this verified-solvable level"
+							: "Solve the level first"
+					}
+				>
+					Share level
+				</button>
+				<span style={{ fontSize: 12, opacity: 0.7 }}>{shareStatus}</span>
+			</div>
+			<div
+				style={{
+					marginTop: 12,
+					width: GRID_W * cellSize,
+					maxHeight: 180,
+					overflowY: "auto",
+					border: "1px solid #222",
+					background: "#070712",
+					padding: 8,
+					boxSizing: "border-box",
+				}}
+			>
+				<div
+					style={{
+						fontSize: 12,
+						opacity: 0.8,
+						marginBottom: 6,
+						letterSpacing: 1,
+					}}
+				>
+					COMMUNITY LEVELS
+				</div>
+				{community.length === 0 ? (
+					<div style={{ fontSize: 12, opacity: 0.5 }}>
+						No levels yet — be the first to share one.
+					</div>
+				) : (
+					<ul
+						style={{
+							listStyle: "none",
+							padding: 0,
+							margin: 0,
+							display: "flex",
+							flexDirection: "column",
+							gap: 4,
+						}}
+					>
+						{community.map((lvl) => (
+							<li key={lvl.id}>
+								<button
+									type="button"
+									onClick={() => loadCommunityLevel(lvl.id)}
+									disabled={loadingId === lvl.id}
+									style={{
+										width: "100%",
+										textAlign: "left",
+										padding: "4px 8px",
+										background: "#111122",
+										color: "#cfd",
+										border: "1px solid #2a2a40",
+										borderRadius: 3,
+										cursor: "pointer",
+										fontFamily: "monospace",
+										fontSize: 12,
+									}}
+								>
+									#{lvl.id} {lvl.title}
+									<span style={{ opacity: 0.5 }}>
+										{" "}
+										— by {lvl.author.slice(0, 6)} · {lvl.solves} solves
+									</span>
+								</button>
+							</li>
+						))}
+					</ul>
+				)}
+			</div>
 		</div>
 	);
 }

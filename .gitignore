@@ -36,3 +36,5 @@ dist-ssr
 # Build stuff
 .wrangler/
 build/
+
+.claude/worktrees/*

@@ -4,5 +4,5 @@ pages_build_output_dir = "dist"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "100apps"
-database_id = "5d75f898-a413-44fd-9ca2-4e3e19c56496"
+database_name = "100games"
+database_id = "cb90aeb2-0985-441f-b171-29722298690b"
