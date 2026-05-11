@@ -28,7 +28,7 @@ function Gallery() {
 			<div className="gallery-grid">
 				{GAMES.map((game, i) => (
 					<Link
-						to={`/game-${game.id}`}
+						to={`/game/${game.id}`}
 						key={game.id}
 						className="app-card"
 						style={getRandomGradient(i)}
@@ -85,7 +85,7 @@ function App() {
 	return (
 		<Routes>
 			<Route path="/" element={<Gallery />} />
-			<Route path="/game-:gameId" element={<GamePage />} />
+			<Route path="/game/:gameId" element={<GamePage />} />
 		</Routes>
 	);
 }
