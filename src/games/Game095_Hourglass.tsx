@@ -1,7 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-
-// 4 chambers in a tree: top -> via gates -> two mid -> via gates -> three bottom
-// Tilt left/right biases the splits.
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Chambers = {
 	top: number;
@@ -11,47 +8,235 @@ type Chambers = {
 	b1: number;
 	b2: number;
 };
-const INIT: Chambers = { top: 100, midL: 0, midR: 0, b0: 0, b1: 0, b2: 0 };
 
-// targets for bottom proportions (out of 100)
-const TARGET = { b0: 30, b1: 50, b2: 20 };
+function mulberry32(a: number) {
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+function hashStr(s: string): number {
+	let h = 2166136261 >>> 0;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
+function todayKey(): string {
+	const d = new Date();
+	return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
 
-const FLOW_RATE = 12; // sand per second per active outlet
+type Config = {
+	target: { b0: number; b1: number; b2: number };
+	flowRate: number;
+	leakL: number;
+	leakR: number;
+	startSand: number;
+};
+
+function generateConfig(seed: number): Config {
+	const rng = mulberry32(seed);
+	let a = 10 + Math.floor(rng() * 51);
+	let b = 10 + Math.floor(rng() * 51);
+	let c = 100 - a - b;
+	if (c < 10) {
+		const deficit = 10 - c;
+		if (a > b) a -= deficit;
+		else b -= deficit;
+		c = 10;
+	} else if (c > 80) {
+		c = 80;
+		const rest = 100 - c;
+		a = 10 + Math.floor(rng() * (rest - 20));
+		b = rest - a;
+	}
+	return {
+		target: { b0: a, b1: b, b2: c },
+		flowRate: 10 + Math.floor(rng() * 8),
+		leakL: rng() * 0.2,
+		leakR: rng() * 0.2,
+		startSand: 100,
+	};
+}
+
+let _ac: AudioContext | null = null;
+function ac(): AudioContext | null {
+	if (typeof window === "undefined") return null;
+	if (!_ac) {
+		try {
+			_ac = new (window.AudioContext ||
+				(window as unknown as { webkitAudioContext: typeof AudioContext })
+					.webkitAudioContext)();
+		} catch {
+			return null;
+		}
+	}
+	return _ac;
+}
+
+type StreamRef = {
+	src: AudioBufferSourceNode | null;
+	gain: GainNode | null;
+};
+function startStream(ref: StreamRef) {
+	const c = ac();
+	if (!c) return;
+	if (ref.src) return;
+	const dur = 1.0;
+	const n = Math.floor(c.sampleRate * dur);
+	const b = c.createBuffer(1, n, c.sampleRate);
+	const d = b.getChannelData(0);
+	for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * 0.5;
+	const src = c.createBufferSource();
+	src.buffer = b;
+	src.loop = true;
+	const f = c.createBiquadFilter();
+	f.type = "bandpass";
+	f.frequency.value = 1200;
+	f.Q.value = 0.7;
+	const g = c.createGain();
+	g.gain.value = 0;
+	src.connect(f).connect(g).connect(c.destination);
+	src.start();
+	ref.src = src;
+	ref.gain = g;
+}
+function setStreamGain(ref: StreamRef, v: number) {
+	const c = ac();
+	if (!c || !ref.gain) return;
+	ref.gain.gain.setTargetAtTime(v, c.currentTime, 0.05);
+}
+function stopStream(ref: StreamRef) {
+	try {
+		if (ref.src) ref.src.stop();
+	} catch {}
+	ref.src = null;
+	ref.gain = null;
+}
+function chime(freq: number) {
+	const c = ac();
+	if (!c) return;
+	const t = c.currentTime;
+	const o = c.createOscillator();
+	const g = c.createGain();
+	o.type = "sine";
+	o.frequency.value = freq;
+	g.gain.setValueAtTime(0.001, t);
+	g.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+	g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+	o.connect(g).connect(c.destination);
+	o.start(t);
+	o.stop(t + 0.65);
+}
 
 export default function Game095_Hourglass() {
+	const [seedInput, setSeedInput] = useState<string>(() => todayKey());
+	const seed = useMemo(() => hashStr(seedInput), [seedInput]);
+	const cfg = useMemo(() => generateConfig(seed), [seed]);
+
+	const INIT: Chambers = useMemo(
+		() => ({
+			top: cfg.startSand,
+			midL: 0,
+			midR: 0,
+			b0: 0,
+			b1: 0,
+			b2: 0,
+		}),
+		[cfg],
+	);
+
 	const [c, setC] = useState<Chambers>(INIT);
-	const [tilt, setTilt] = useState(0); // -1..1
+	const [tilt, setTilt] = useState(0);
+	const tiltVelRef = useRef(0);
 	const [running, setRunning] = useState(false);
 	const [done, setDone] = useState(false);
 	const tiltRef = useRef(0);
 	tiltRef.current = tilt;
 	const lastRef = useRef<number | null>(null);
 	const rafRef = useRef<number | null>(null);
+	const keysRef = useRef<{ left: boolean; right: boolean }>({
+		left: false,
+		right: false,
+	});
+	const streamRef = useRef<StreamRef>({ src: null, gain: null });
 
 	useEffect(() => {
-		if (!running) return;
+		setC(INIT);
+		setTilt(0);
+		tiltVelRef.current = 0;
+		setRunning(false);
+		setDone(false);
+		lastRef.current = null;
+	}, [INIT]);
+
+	useEffect(() => {
+		function down(e: KeyboardEvent) {
+			if (e.key === "ArrowLeft") keysRef.current.left = true;
+			if (e.key === "ArrowRight") keysRef.current.right = true;
+			if (e.key === " ") {
+				e.preventDefault();
+				setRunning((r) => !r);
+			}
+		}
+		function up(e: KeyboardEvent) {
+			if (e.key === "ArrowLeft") keysRef.current.left = false;
+			if (e.key === "ArrowRight") keysRef.current.right = false;
+		}
+		window.addEventListener("keydown", down);
+		window.addEventListener("keyup", up);
+		return () => {
+			window.removeEventListener("keydown", down);
+			window.removeEventListener("keyup", up);
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!running) {
+			setStreamGain(streamRef.current, 0);
+			return;
+		}
+		startStream(streamRef.current);
+		let alive = true;
 		function tick(now: number) {
+			if (!alive) return;
 			if (lastRef.current == null) lastRef.current = now;
-			const dt = (now - lastRef.current) / 1000;
+			const dt = Math.min(0.05, (now - lastRef.current) / 1000);
 			lastRef.current = now;
 
+			let accel = 0;
+			if (keysRef.current.left) accel -= 2.4;
+			if (keysRef.current.right) accel += 2.4;
+			tiltVelRef.current = (tiltVelRef.current + accel * dt) * 0.92;
+			setTilt((tl) =>
+				Math.max(-1, Math.min(1, tl + tiltVelRef.current * dt)),
+			);
+
 			setC((s) => {
-				const t = tiltRef.current;
-				// top -> midL/midR. tilt -1 => all left, +1 => all right
-				const topRate = FLOW_RATE * dt;
+				const tlt = tiltRef.current;
+				const topRate = cfg.flowRate * dt;
 				const fromTop = Math.min(s.top, topRate);
-				const leftFrac = 0.5 - t * 0.5; // 0..1
+				const leftFrac = 0.5 - tlt * 0.5;
 				const toL = fromTop * leftFrac;
 				const toR = fromTop * (1 - leftFrac);
 
-				// mid -> bottoms. b0 from midL, b2 from midR, b1 from both (center)
-				const midLRate = Math.min(s.midL + toL, FLOW_RATE * dt);
-				const midRRate = Math.min(s.midR + toR, FLOW_RATE * dt);
-				// distribute midL flow between b0 and b1 by (1-tilt right shift)
-				const midLToB0 = midLRate * (0.5 - t * 0.5);
-				const midLToB1 = midLRate - midLToB0;
-				const midRToB2 = midRRate * (0.5 + t * 0.5);
-				const midRToB1 = midRRate - midRToB2;
+				const midLRate = Math.min(s.midL + toL, cfg.flowRate * dt);
+				const midRRate = Math.min(s.midR + toR, cfg.flowRate * dt);
+				let midLToB0 = midLRate * (0.5 - tlt * 0.5);
+				let midLToB1 = midLRate - midLToB0;
+				let midRToB2 = midRRate * (0.5 + tlt * 0.5);
+				let midRToB1 = midRRate - midRToB2;
+				const leakA = midLToB0 * cfg.leakL;
+				midLToB0 -= leakA;
+				midLToB1 += leakA;
+				const leakB = midRToB2 * cfg.leakR;
+				midRToB2 -= leakB;
+				midRToB1 += leakB;
 
 				const ns: Chambers = {
 					top: s.top - fromTop,
@@ -67,21 +252,29 @@ export default function Game095_Hourglass() {
 					ns.midR = 0;
 					setRunning(false);
 					setDone(true);
+					chime(880);
 				}
+				const outflow = fromTop + midLRate + midRRate;
+				setStreamGain(streamRef.current, Math.min(0.18, outflow * 0.6));
 				return ns;
 			});
-			if (running) rafRef.current = requestAnimationFrame(tick);
+			rafRef.current = requestAnimationFrame(tick);
 		}
 		rafRef.current = requestAnimationFrame(tick);
 		return () => {
+			alive = false;
 			if (rafRef.current) cancelAnimationFrame(rafRef.current);
 			lastRef.current = null;
+			rafRef.current = null;
 		};
-	}, [running]);
+	}, [running, cfg]);
+
+	useEffect(() => () => stopStream(streamRef.current), []);
 
 	function reset() {
 		setC(INIT);
 		setTilt(0);
+		tiltVelRef.current = 0;
 		setRunning(false);
 		setDone(false);
 		lastRef.current = null;
@@ -89,15 +282,36 @@ export default function Game095_Hourglass() {
 
 	function score(): number {
 		const total = c.b0 + c.b1 + c.b2 || 1;
-		const p0 = (c.b0 / total) * 100,
-			p1 = (c.b1 / total) * 100,
-			p2 = (c.b2 / total) * 100;
+		const p0 = (c.b0 / total) * 100;
+		const p1 = (c.b1 / total) * 100;
+		const p2 = (c.b2 / total) * 100;
 		const err =
-			Math.abs(p0 - TARGET.b0) +
-			Math.abs(p1 - TARGET.b1) +
-			Math.abs(p2 - TARGET.b2);
+			Math.abs(p0 - cfg.target.b0) +
+			Math.abs(p1 - cfg.target.b1) +
+			Math.abs(p2 - cfg.target.b2);
 		return Math.max(0, Math.round(100 - err));
 	}
+
+	const bestKey = `hg_best_${seedInput}`;
+	const [best, setBest] = useState<number | null>(null);
+	useEffect(() => {
+		try {
+			const v = localStorage.getItem(bestKey);
+			setBest(v ? parseInt(v, 10) : null);
+		} catch {}
+	}, [bestKey]);
+	useEffect(() => {
+		if (!done) return;
+		const s = score();
+		try {
+			const prev = localStorage.getItem(bestKey);
+			if (!prev || s > parseInt(prev, 10)) {
+				localStorage.setItem(bestKey, String(s));
+				setBest(s);
+			}
+		} catch {}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [done]);
 
 	return (
 		<div
@@ -110,10 +324,35 @@ export default function Game095_Hourglass() {
 			}}
 		>
 			<h2 style={{ margin: "0 0 4px" }}>Hourglass</h2>
-			<p style={{ margin: "0 0 12px", fontSize: 13, opacity: 0.7 }}>
-				Use ← → (or the slider) to tilt and route sand. Hit target proportions:{" "}
-				{TARGET.b0}% / {TARGET.b1}% / {TARGET.b2}%.
+			<p style={{ margin: "0 0 10px", fontSize: 13, opacity: 0.7 }}>
+				← → (or slider) tilt with inertia, Space to start/pause. Hit target
+				proportions: {cfg.target.b0}% / {cfg.target.b1}% / {cfg.target.b2}%.
 			</p>
+			<div
+				style={{
+					display: "flex",
+					gap: 10,
+					alignItems: "center",
+					marginBottom: 10,
+					fontSize: 12,
+				}}
+			>
+				<label>
+					Seed:{" "}
+					<input
+						value={seedInput}
+						onChange={(e) => setSeedInput(e.target.value)}
+						style={{ width: 120 }}
+					/>
+				</label>
+				<button onClick={() => setSeedInput(todayKey())}>Daily</button>
+				<button
+					onClick={() => setSeedInput(`r${Math.floor(Math.random() * 1e9)}`)}
+				>
+					New mix
+				</button>
+				{best != null && <span>Best {best}/100</span>}
+			</div>
 
 			<div style={{ display: "flex", gap: 24 }}>
 				<svg
@@ -122,19 +361,16 @@ export default function Game095_Hourglass() {
 					height={420}
 					style={{ background: "#0e0a06", borderRadius: 8 }}
 				>
-					{/* top chamber */}
 					<Chamber
 						x={120}
 						y={20}
 						w={120}
 						h={90}
-						fill={c.top / 100}
+						fill={c.top / cfg.startSand}
 						label={`${Math.round(c.top)}`}
 					/>
-					{/* split lines */}
 					<line x1={180} y1={110} x2={100} y2={150} stroke="#806040" />
 					<line x1={180} y1={110} x2={260} y2={150} stroke="#806040" />
-					{/* mid chambers */}
 					<Chamber
 						x={40}
 						y={150}
@@ -151,40 +387,37 @@ export default function Game095_Hourglass() {
 						fill={c.midR / 50}
 						label={`${Math.round(c.midR)}`}
 					/>
-					{/* mid -> bottom links */}
 					<line x1={90} y1={220} x2={50} y2={260} stroke="#806040" />
 					<line x1={90} y1={220} x2={180} y2={260} stroke="#806040" />
 					<line x1={270} y1={220} x2={180} y2={260} stroke="#806040" />
 					<line x1={270} y1={220} x2={310} y2={260} stroke="#806040" />
-					{/* bottoms */}
 					<Chamber
 						x={10}
 						y={260}
 						w={80}
 						h={140}
-						fill={c.b0 / 100}
+						fill={c.b0 / cfg.startSand}
 						label={`${Math.round(c.b0)}`}
-						target={TARGET.b0}
+						target={cfg.target.b0}
 					/>
 					<Chamber
 						x={140}
 						y={260}
 						w={80}
 						h={140}
-						fill={c.b1 / 100}
+						fill={c.b1 / cfg.startSand}
 						label={`${Math.round(c.b1)}`}
-						target={TARGET.b1}
+						target={cfg.target.b1}
 					/>
 					<Chamber
 						x={270}
 						y={260}
 						w={80}
 						h={140}
-						fill={c.b2 / 100}
+						fill={c.b2 / cfg.startSand}
 						label={`${Math.round(c.b2)}`}
-						target={TARGET.b2}
+						target={cfg.target.b2}
 					/>
-					{/* tilt indicator */}
 					<g transform={`translate(180,410) rotate(${tilt * 20})`}>
 						<line
 							x1={-40}
@@ -199,7 +432,9 @@ export default function Game095_Hourglass() {
 
 				<div style={{ flex: 1 }}>
 					<div style={{ marginBottom: 12 }}>
-						<label style={{ fontSize: 12, opacity: 0.7 }}>Tilt</label>
+						<label style={{ fontSize: 12, opacity: 0.7 }}>
+							Tilt ({tilt.toFixed(2)})
+						</label>
 						<br />
 						<input
 							type="range"
@@ -207,7 +442,10 @@ export default function Game095_Hourglass() {
 							max={1}
 							step={0.01}
 							value={tilt}
-							onChange={(e) => setTilt(parseFloat(e.target.value))}
+							onChange={(e) => {
+								setTilt(parseFloat(e.target.value));
+								tiltVelRef.current = 0;
+							}}
 							style={{ width: 240 }}
 						/>
 					</div>
@@ -223,8 +461,9 @@ export default function Game095_Hourglass() {
 						</div>
 					)}
 					<div style={{ marginTop: 16, fontSize: 12, opacity: 0.7 }}>
-						Tip: tilt steers each gate. The center chamber gathers leakage from
-						both sides.
+						Tip: keyboard tilt has inertia. Slider snaps directly. Flow rate{" "}
+						{cfg.flowRate}, leak L/R {cfg.leakL.toFixed(2)}/
+						{cfg.leakR.toFixed(2)}.
 					</div>
 				</div>
 			</div>

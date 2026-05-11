@@ -1,87 +1,190 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-// A staircase of word pairs. Each step labels the same concept in a target
-// language across several related languages (cognates). Player must pick the
-// correct meaning. Languages are mini "Romance" cognate sets — designed to
-// teach by exposure.
+// Tower of Tongues — climb a tower made of invented "language families".
+// Every language, word and meaning is procedurally generated from a seed
+// via mulberry32: no hardcoded vocabulary. Players learn each family's
+// sound-shifts as they climb, because cognates within a family share rules.
 
-type Step = { word: string; lang: string; choices: string[]; answer: number };
-type Stair = { lang: string; steps: Step[] };
+function mulberry32(seed: number) {
+	let a = seed >>> 0;
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
 
-const STAIRS: Stair[] = [
-	{
-		lang: "Spanish",
-		steps: [
-			{ word: "agua", lang: "Spanish", choices: ["water", "fire", "wind"], answer: 0 },
-			{ word: "noche", lang: "Spanish", choices: ["day", "night", "house"], answer: 1 },
-			{ word: "luna", lang: "Spanish", choices: ["moon", "lake", "tree"], answer: 0 },
-			{ word: "rojo", lang: "Spanish", choices: ["green", "blue", "red"], answer: 2 },
-			{ word: "amigo", lang: "Spanish", choices: ["friend", "enemy", "brother"], answer: 0 },
-		],
-	},
-	{
-		lang: "Italian",
-		steps: [
-			{ word: "acqua", lang: "Italian", choices: ["bread", "water", "stone"], answer: 1 },
-			{ word: "notte", lang: "Italian", choices: ["note", "night", "new"], answer: 1 },
-			{ word: "luna", lang: "Italian", choices: ["moon", "sun", "earth"], answer: 0 },
-			{ word: "rosso", lang: "Italian", choices: ["red", "rose", "roof"], answer: 0 },
-			{ word: "amico", lang: "Italian", choices: ["friend", "lover", "stranger"], answer: 0 },
-		],
-	},
-	{
-		lang: "French",
-		steps: [
-			{ word: "eau", lang: "French", choices: ["egg", "water", "high"], answer: 1 },
-			{ word: "nuit", lang: "French", choices: ["nothing", "night", "noon"], answer: 1 },
-			{ word: "lune", lang: "French", choices: ["lung", "moon", "lonely"], answer: 1 },
-			{ word: "rouge", lang: "French", choices: ["road", "red", "rough"], answer: 1 },
-			{ word: "ami", lang: "French", choices: ["friend", "love", "soul"], answer: 0 },
-		],
-	},
-	{
-		lang: "Portuguese",
-		steps: [
-			{ word: "água", lang: "Portuguese", choices: ["water", "wing", "soul"], answer: 0 },
-			{ word: "noite", lang: "Portuguese", choices: ["nine", "night", "north"], answer: 1 },
-			{ word: "lua", lang: "Portuguese", choices: ["light", "moon", "law"], answer: 1 },
-			{ word: "vermelho", lang: "Portuguese", choices: ["green", "red", "yellow"], answer: 1 },
-			{ word: "amigo", lang: "Portuguese", choices: ["friend", "father", "grandfather"], answer: 0 },
-		],
-	},
+const ONSETS = ["k", "t", "p", "n", "m", "s", "l", "r", "h", "v", "f", "j"];
+const VOWELS = ["a", "e", "i", "o", "u"];
+const CODAS = ["", "", "", "n", "r", "s", "l", "k", "m"];
+
+const CONCEPTS = [
+	"water", "fire", "sun", "moon", "stone", "wind",
+	"hand", "eye", "tree", "bird", "fish", "song",
+	"sleep", "run", "see", "give", "small", "great",
 ];
 
-export default function TowerOfTongues() {
-	const stairs = useMemo(() => STAIRS, []);
-	const [stairIdx, setStairIdx] = useState(0);
-	const [step, setStep] = useState(0);
-	const [score, setScore] = useState(0);
-	const [strikes, setStrikes] = useState(0);
-	const [msg, setMsg] = useState("");
-	const stair = stairs[stairIdx];
-	const cur = stair.steps[step];
-	const done = step >= stair.steps.length;
+type Lexicon = { lang: string; words: Record<string, string> };
 
-	const pick = (i: number) => {
+function pickWeighted<T>(rng: () => number, arr: T[]): T {
+	return arr[Math.floor(rng() * arr.length)];
+}
+
+function makeSyllable(rng: () => number): string {
+	return pickWeighted(rng, ONSETS) + pickWeighted(rng, VOWELS) + pickWeighted(rng, CODAS);
+}
+
+function makeWord(rng: () => number): string {
+	const syllables = 1 + Math.floor(rng() * 2);
+	let w = "";
+	for (let i = 0; i < syllables; i++) w += makeSyllable(rng);
+	return w;
+}
+
+function makeLangName(rng: () => number): string {
+	const s = makeSyllable(rng) + makeSyllable(rng);
+	return s.charAt(0).toUpperCase() + s.slice(1) + "ish";
+}
+
+function applyShift(word: string, from: string, to: string): string {
+	return word.split(from).join(to);
+}
+
+function genFamily(seed: number, langCount: number, conceptCount: number): Lexicon[] {
+	const rng = mulberry32(seed);
+	const ancestralWords: Record<string, string> = {};
+	const concepts = [...CONCEPTS].sort(() => rng() - 0.5).slice(0, conceptCount);
+	for (const c of concepts) ancestralWords[c] = makeWord(rng);
+	const langs: Lexicon[] = [
+		{ lang: makeLangName(rng), words: { ...ancestralWords } },
+	];
+	for (let i = 1; i < langCount; i++) {
+		const pool = ONSETS.concat(VOWELS);
+		const from = pickWeighted(rng, pool);
+		let to = pickWeighted(rng, pool);
+		while (to === from) to = pickWeighted(rng, pool);
+		const w: Record<string, string> = {};
+		for (const c of concepts) w[c] = applyShift(ancestralWords[c], from, to);
+		langs.push({ lang: makeLangName(rng), words: w });
+	}
+	return langs;
+}
+
+type Step = { word: string; lang: string; answer: string; choices: string[] };
+
+function buildStaircase(seed: number, family: Lexicon[]): Step[] {
+	const rng = mulberry32(seed ^ 0x9e3779b1);
+	const steps: Step[] = [];
+	const concepts = Object.keys(family[0].words);
+	for (let i = 0; i < family.length; i++) {
+		const lang = family[i];
+		const order = [...concepts].sort(() => rng() - 0.5).slice(0, 5);
+		for (const c of order) {
+			const wrong = concepts.filter((x) => x !== c).sort(() => rng() - 0.5).slice(0, 2);
+			const choices = [c, ...wrong].sort(() => rng() - 0.5);
+			steps.push({ word: lang.words[c], lang: lang.lang, answer: c, choices });
+		}
+	}
+	return steps;
+}
+
+function useAudio() {
+	const ctxRef = useRef<AudioContext | null>(null);
+	const ensure = () => {
+		if (ctxRef.current) return ctxRef.current;
+		const Ctor =
+			(window as unknown as { AudioContext: typeof AudioContext }).AudioContext ||
+			(window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+		ctxRef.current = new Ctor();
+		return ctxRef.current;
+	};
+	useEffect(() => () => { ctxRef.current?.close(); }, []);
+	const blip = (freq: number, dur = 0.12, type: OscillatorType = "sine") => {
+		const ctx = ensure();
+		const o = ctx.createOscillator();
+		const g = ctx.createGain();
+		o.type = type;
+		o.frequency.value = freq;
+		o.connect(g); g.connect(ctx.destination);
+		const t = ctx.currentTime;
+		g.gain.setValueAtTime(0.0001, t);
+		g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+		g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+		o.start(t); o.stop(t + dur + 0.02);
+	};
+	return { blip };
+}
+
+export default function TowerOfTongues() {
+	const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1e9));
+	const [difficulty, setDifficulty] = useState<"short" | "tall" | "epic">("tall");
+	const langCount = difficulty === "short" ? 3 : difficulty === "tall" ? 5 : 8;
+	const conceptCount = difficulty === "short" ? 5 : difficulty === "tall" ? 7 : 10;
+	const family = useMemo(() => genFamily(seed, langCount, conceptCount), [seed, langCount, conceptCount]);
+	const steps = useMemo(() => buildStaircase(seed, family), [seed, family]);
+
+	const [stepIdx, setStepIdx] = useState(0);
+	const [score, setScore] = useState(0);
+	const [streak, setStreak] = useState(0);
+	const [bestStreak, setBestStreak] = useState(0);
+	const [strikes, setStrikes] = useState(0);
+	const [msg, setMsg] = useState("Listen for the pattern. Same family, shifted sounds.");
+	const [hintUsed, setHintUsed] = useState(false);
+	const [revealedHint, setRevealedHint] = useState<string | null>(null);
+	const [startMs] = useState(() => Date.now());
+	const { blip } = useAudio();
+
+	const cur = steps[stepIdx];
+	const done = stepIdx >= steps.length;
+
+	const restart = (newSeed?: number) => {
+		const s = newSeed ?? Math.floor(Math.random() * 1e9);
+		setSeed(s);
+		setStepIdx(0); setScore(0); setStreak(0); setBestStreak(0);
+		setStrikes(0); setHintUsed(false); setRevealedHint(null);
+		setMsg("New tower. Listen for the pattern.");
+	};
+
+	const pick = (c: string) => {
 		if (done) return;
-		if (i === cur.answer) {
-			setScore((s) => s + 10);
-			setStep((s) => s + 1);
-			setMsg("Yes! Step up.");
+		if (c === cur.answer) {
+			const bonus = streak >= 3 ? 5 : 0;
+			setScore((s) => s + 10 + bonus);
+			setStreak((s) => {
+				const ns = s + 1;
+				setBestStreak((b) => Math.max(b, ns));
+				return ns;
+			});
+			setMsg(bonus ? `Yes! Streak bonus +${bonus}.` : "Yes! Step up.");
+			setStepIdx((i) => i + 1);
+			setRevealedHint(null);
+			blip(440 + (stepIdx % 12) * 30, 0.16, "sine");
 		} else {
 			setStrikes((x) => x + 1);
-			setMsg(`Not quite. "${cur.word}" means "${cur.choices[cur.answer]}".`);
+			setStreak(0);
+			setMsg(`Not quite — "${cur.word}" meant "${cur.answer}".`);
+			blip(180, 0.2, "square");
 		}
 	};
 
-	const nextStair = () => {
-		setStairIdx((i) => (i + 1) % stairs.length);
-		setStep(0);
-		setMsg("");
+	const hint = () => {
+		if (done || !cur) return;
+		setHintUsed(true);
+		const langIdx = family.findIndex((l) => l.lang === cur.lang);
+		if (langIdx > 0) {
+			const prev = family[langIdx - 1];
+			setRevealedHint(`In ${prev.lang} this concept is "${prev.words[cur.answer]}".`);
+		} else {
+			setRevealedHint(`First language — no cognate to compare yet.`);
+		}
+		setScore((s) => Math.max(0, s - 3));
 	};
 
-	// Render the staircase visually.
-	const totalSteps = stair.steps.length;
+	const elapsed = Math.floor((Date.now() - startMs) / 1000);
+	const totalSteps = steps.length;
+
 	return (
 		<div
 			style={{
@@ -95,65 +198,103 @@ export default function TowerOfTongues() {
 				display: "flex",
 				flexDirection: "column",
 				alignItems: "center",
+				overflow: "auto",
 			}}
 		>
 			<h2 style={{ margin: 0 }}>Tower of Tongues</h2>
-			<div style={{ fontSize: 13, opacity: 0.7 }}>
-				Pick the right meaning to climb. Language: <b>{stair.lang}</b>
+			<div style={{ fontSize: 12, opacity: 0.7 }}>
+				Seed {seed} · {family.length} languages · {totalSteps} steps
 			</div>
+			<div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+				{(["short", "tall", "epic"] as const).map((d) => (
+					<button
+						type="button"
+						key={d}
+						onClick={() => { setDifficulty(d); restart(); }}
+						style={{
+							padding: "4px 10px",
+							background: difficulty === d ? "#d4a04a" : "#3a2a1f",
+							color: difficulty === d ? "#000" : "#f0e6d0",
+							border: "1px solid #6b4a2a",
+							borderRadius: 3,
+							cursor: "pointer",
+							fontSize: 12,
+						}}
+					>
+						{d}
+					</button>
+				))}
+				<button
+					type="button"
+					onClick={() => restart()}
+					style={{
+						padding: "4px 10px",
+						background: "#3a2a1f",
+						color: "#f0e6d0",
+						border: "1px solid #6b4a2a",
+						borderRadius: 3,
+						cursor: "pointer",
+						fontSize: 12,
+					}}
+				>
+					New tower
+				</button>
+			</div>
+			{!done && cur && (
+				<div style={{ marginTop: 14, textAlign: "center" }}>
+					<div style={{ fontSize: 13, opacity: 0.7 }}>
+						Step {stepIdx + 1} / {totalSteps} · {cur.lang}
+					</div>
+					<div style={{ fontSize: 40, marginTop: 6, fontStyle: "italic" }}>{cur.word}</div>
+				</div>
+			)}
 			<div
 				style={{
-					marginTop: 16,
+					marginTop: 12,
 					position: "relative",
-					width: 500,
-					height: 320,
+					width: 520,
+					height: 280,
 				}}
 			>
-				{Array.from({ length: totalSteps }).map((_, idx) => {
-					const isCur = idx === step;
-					const isDone = idx < step;
-					const fromBottom = idx;
+				{steps.map((s, idx) => {
+					const isCur = idx === stepIdx;
+					const isDone = idx < stepIdx;
+					if (idx > stepIdx + 4 || idx < stepIdx - 4) return null;
+					const rel = idx - stepIdx;
 					return (
 						<div
-							key={`step-${idx}-${stair.lang}`}
+							key={`step-${idx}`}
 							style={{
 								position: "absolute",
-								bottom: fromBottom * 50,
-								left: 30 + fromBottom * 15,
+								top: 120 - rel * 44,
+								left: 80 + rel * 18,
 								width: 360,
-								height: 44,
-								background: isCur
-									? "#d4a04a"
-									: isDone
-										? "#5a8c3a"
-										: "#3a2a1f",
+								height: 36,
+								background: isCur ? "#d4a04a" : isDone ? "#5a8c3a" : "#3a2a1f",
 								borderRadius: 4,
 								border: "1px solid #6b4a2a",
 								display: "flex",
 								alignItems: "center",
 								padding: "0 14px",
-								fontSize: 18,
+								fontSize: 14,
 								color: isCur ? "#000" : "#f0e6d0",
 								boxShadow: isCur ? "0 0 12px rgba(255,200,80,0.6)" : "none",
 								transition: "all 0.3s",
+								opacity: isDone ? 0.85 : 1,
 							}}
 						>
-							{isDone
-								? `✓ ${stair.steps[idx].word}`
-								: isCur
-									? stair.steps[idx].word
-									: "•••"}
+							{isDone ? `✓ ${s.word} = ${s.answer}` : isCur ? `${s.word} (${s.lang})` : "•••"}
 						</div>
 					);
 				})}
 			</div>
-			{!done && (
-				<div style={{ marginTop: 20, display: "flex", gap: 10 }}>
-					{cur.choices.map((c, i) => (
+			{!done && cur && (
+				<div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+					{cur.choices.map((c) => (
 						<button
 							type="button"
 							key={c}
-							onClick={() => pick(i)}
+							onClick={() => pick(c)}
 							style={{
 								padding: "10px 18px",
 								background: "#6b4a2a",
@@ -169,30 +310,37 @@ export default function TowerOfTongues() {
 					))}
 				</div>
 			)}
-			{done && (
+			{!done && (
 				<button
 					type="button"
-					onClick={nextStair}
+					onClick={hint}
+					disabled={hintUsed}
 					style={{
-						marginTop: 20,
-						padding: "10px 18px",
-						background: "#9bcc70",
-						color: "#000",
+						marginTop: 10,
+						padding: "6px 12px",
+						background: hintUsed ? "#444" : "#7a5a3a",
+						color: "#fff",
 						border: "none",
-						borderRadius: 4,
-						cursor: "pointer",
-						fontWeight: 600,
+						borderRadius: 3,
+						cursor: hintUsed ? "default" : "pointer",
+						fontSize: 12,
 					}}
 				>
-					Next language →
+					Hint (−3)
 				</button>
 			)}
-			<div style={{ marginTop: 14, fontStyle: "italic", minHeight: 20 }}>
-				{msg}
+			{revealedHint && (
+				<div style={{ marginTop: 6, fontSize: 12, color: "#ffd28c" }}>{revealedHint}</div>
+			)}
+			<div style={{ marginTop: 10, fontStyle: "italic", minHeight: 20 }}>{msg}</div>
+			<div style={{ fontSize: 12 }}>
+				Score: {score} · Streak: {streak} (best {bestStreak}) · Strikes: {strikes} · {elapsed}s
 			</div>
-			<div style={{ marginTop: 6, fontSize: 13 }}>
-				Score: {score} · Strikes: {strikes}
-			</div>
+			{done && (
+				<div style={{ marginTop: 10, color: "#9bcc70", fontSize: 16 }}>
+					Tower complete! Final: {score} in {elapsed}s
+				</div>
+			)}
 		</div>
 	);
 }

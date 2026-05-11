@@ -26,7 +26,7 @@ function mulberry32(a: number) {
 
 const W = 720,
 	H = 460;
-const DURATION = 12000; // ms — sun travels from start to fully below
+const DURATION = 12000;
 
 function getOrCreateAuthor(): string {
 	try {
@@ -58,8 +58,41 @@ type Histogram = {
 	counts: number[];
 	total: number;
 };
+type AuthorInfo = {
+	rank: number | null;
+	percentile: number | null;
+	best_abs_offset_ms: number | null;
+	current_streak: number;
+	longest_streak: number;
+	total_plays: number;
+};
 
 const LS_BEST_KEY = "sundown_local_best";
+
+function playTone(
+	ref: React.MutableRefObject<AudioContext | null>,
+	freq: number,
+	dur = 0.18,
+	type: OscillatorType = "sine",
+	gainV = 0.15,
+) {
+	try {
+		if (!ref.current) ref.current = new AudioContext();
+		const ctx = ref.current;
+		const o = ctx.createOscillator();
+		const g = ctx.createGain();
+		o.type = type;
+		o.frequency.value = freq;
+		g.gain.value = 0.0001;
+		g.gain.linearRampToValueAtTime(gainV, ctx.currentTime + 0.01);
+		g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+		o.connect(g).connect(ctx.destination);
+		o.start();
+		o.stop(ctx.currentTime + dur + 0.02);
+	} catch {
+		/* ignore */
+	}
+}
 
 export default function Game100_Sundown() {
 	const day = todayUTC();
@@ -67,6 +100,7 @@ export default function Game100_Sundown() {
 	const rng = useRef(mulberry32(seed));
 	const startedAt = useRef<number | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
+	const audio = useRef<AudioContext | null>(null);
 	const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
 	const [result, setResult] = useState<{
 		offset_ms: number;
@@ -84,9 +118,11 @@ export default function Game100_Sundown() {
 	const author = useRef<string>(getOrCreateAuthor());
 	const [leaderboard, setLeaderboard] = useState<LbEntry[]>([]);
 	const [histogram, setHistogram] = useState<Histogram | null>(null);
+	const [authorInfo, setAuthorInfo] = useState<AuthorInfo | null>(null);
 	const [submitState, setSubmitState] = useState<
 		"idle" | "submitting" | "ok" | "err"
 	>("idle");
+	const [shareCopied, setShareCopied] = useState(false);
 	const [localBest, setLocalBest] = useState<{
 		day: string;
 		offset_ms: number;
@@ -103,7 +139,6 @@ export default function Game100_Sundown() {
 		}
 	});
 
-	// landscape (deterministic from seed)
 	const landscape = useRef<{ horizon: number; hills: number[] }>({
 		horizon: 0,
 		hills: [],
@@ -112,7 +147,8 @@ export default function Game100_Sundown() {
 	const draw = useCallback((ms: number) => {
 		const cnv = canvasRef.current;
 		if (!cnv) return;
-		const ctx = cnv.getContext("2d")!;
+		const ctx = cnv.getContext("2d");
+		if (!ctx) return;
 		const t = Math.min(1.2, ms / DURATION);
 		const grad = ctx.createLinearGradient(0, 0, 0, H);
 		grad.addColorStop(0, lerpColor([20, 30, 70], [60, 30, 40], t));
@@ -120,11 +156,42 @@ export default function Game100_Sundown() {
 		ctx.fillStyle = grad as unknown as string;
 		ctx.fillRect(0, 0, W, H);
 
+		// stars after dusk
+		if (t > 0.7) {
+			const a = Math.min(1, (t - 0.7) / 0.3);
+			ctx.fillStyle = `rgba(255,255,255,${a * 0.7})`;
+			const sr = mulberry32(424242);
+			for (let i = 0; i < 60; i++) {
+				const sx = sr() * W;
+				const sy = sr() * (landscape.current.horizon - 20);
+				const r = sr() * 1.2 + 0.3;
+				ctx.beginPath();
+				ctx.arc(sx, sy, r, 0, Math.PI * 2);
+				ctx.fill();
+			}
+		}
+
 		const sunRadius = 40;
 		const startY = 80;
 		const endY = landscape.current.horizon + 80;
 		const sunY = startY + t * (endY - startY);
 		const sunX = W * 0.5;
+		// glow
+		const glow = ctx.createRadialGradient(
+			sunX,
+			sunY,
+			sunRadius * 0.6,
+			sunX,
+			sunY,
+			sunRadius * 2.2,
+		);
+		glow.addColorStop(0, "rgba(255,210,120,0.55)");
+		glow.addColorStop(1, "rgba(255,210,120,0)");
+		ctx.fillStyle = glow as unknown as string;
+		ctx.beginPath();
+		ctx.arc(sunX, sunY, sunRadius * 2.2, 0, Math.PI * 2);
+		ctx.fill();
+
 		ctx.fillStyle = "#fff2c0";
 		ctx.beginPath();
 		ctx.arc(sunX, sunY, sunRadius, 0, Math.PI * 2);
@@ -155,6 +222,8 @@ export default function Game100_Sundown() {
 		draw(0);
 	}, [draw]);
 
+	// soft ambient cue: low hum during running, pitch nudge as sun approaches.
+	const lastCueRef = useRef(0);
 	useEffect(() => {
 		let raf = 0;
 		function tick(now: number) {
@@ -162,6 +231,12 @@ export default function Game100_Sundown() {
 			if (startedAt.current == null) startedAt.current = now;
 			elapsedRef.current = now - startedAt.current;
 			draw(elapsedRef.current);
+			// audio cue every ~600ms
+			if (now - lastCueRef.current > 600) {
+				lastCueRef.current = now;
+				const t = elapsedRef.current / DURATION;
+				playTone(audio, 180 + t * 80, 0.18, "sine", 0.04);
+			}
 			if (elapsedRef.current < DURATION + 2000)
 				raf = requestAnimationFrame(tick);
 			else if (phase === "running") {
@@ -185,17 +260,19 @@ export default function Game100_Sundown() {
 	const fetchLeaderboard = useCallback(async () => {
 		try {
 			const res = await fetch(
-				`/api/sundown/scores?day=${encodeURIComponent(day)}`,
+				`/api/sundown/scores?day=${encodeURIComponent(day)}&author=${encodeURIComponent(author.current)}`,
 			);
 			if (!res.ok) return;
 			const data = (await res.json()) as {
 				leaderboard: LbEntry[];
 				histogram: Histogram;
+				author: AuthorInfo | null;
 			};
 			setLeaderboard(data.leaderboard || []);
 			setHistogram(data.histogram || null);
+			setAuthorInfo(data.author || null);
 		} catch {
-			// network fail — keep prior state
+			/* network fail */
 		}
 	}, [day]);
 
@@ -208,6 +285,8 @@ export default function Game100_Sundown() {
 		startedAt.current = null;
 		setResult(null);
 		setSubmitState("idle");
+		setShareCopied(false);
+		playTone(audio, 320, 0.12, "triangle", 0.1);
 	}, []);
 
 	const submitScore = useCallback(
@@ -241,19 +320,20 @@ export default function Game100_Sundown() {
 		if (phase !== "running") return;
 		const tMs = elapsedRef.current;
 		const tgt = targetMs();
-		const offset_ms = Math.round(tMs - tgt); // signed: negative=early, positive=late
-		// keep an approximate pixel error for display continuity
-		const sunRadius = 40;
+		const offset_ms = Math.round(tMs - tgt);
 		const startY = 80;
 		const endY = landscape.current.horizon + 80;
 		const errFrac = Math.abs(offset_ms) / DURATION;
 		const errPx = errFrac * (endY - startY);
-		void sunRadius;
 		const score = Math.max(0, Math.round(1000 - Math.abs(offset_ms) / 2));
 		setResult({ offset_ms, errPx, score });
 		setPhase("done");
 
-		// localStorage best (fallback)
+		const a = Math.abs(offset_ms);
+		if (a < 50) playTone(audio, 1320, 0.4, "sine", 0.18);
+		else if (a < 200) playTone(audio, 880, 0.3, "triangle", 0.14);
+		else playTone(audio, 220, 0.25, "sawtooth", 0.08);
+
 		try {
 			const absv = Math.abs(offset_ms);
 			const cur = localBest;
@@ -294,6 +374,30 @@ export default function Game100_Sundown() {
 		}
 	}
 
+	function buildShare(): string {
+		if (!result) return "";
+		const sign =
+			result.offset_ms === 0 ? "" : result.offset_ms > 0 ? "+" : "−";
+		const abs = Math.abs(result.offset_ms);
+		const pctTxt =
+			authorInfo?.percentile != null ? ` • top ${100 - authorInfo.percentile + 1}%` : "";
+		const streakTxt =
+			authorInfo && authorInfo.current_streak > 1
+				? ` • ${authorInfo.current_streak}-day streak`
+				: "";
+		return `Sundown ${day} — ${sign}${abs}ms${pctTxt}${streakTxt}`;
+	}
+
+	async function copyShare() {
+		try {
+			await navigator.clipboard.writeText(buildShare());
+			setShareCopied(true);
+			setTimeout(() => setShareCopied(false), 1500);
+		} catch {
+			/* ignore */
+		}
+	}
+
 	const maxBucket = Math.max(1, ...(histogram?.counts ?? [1]));
 
 	return (
@@ -316,6 +420,10 @@ export default function Game100_Sundown() {
 				width={W}
 				height={H}
 				style={{ background: "#000", borderRadius: 6, display: "block" }}
+				onClick={() => {
+					if (phase === "idle") start();
+					else if (phase === "running") tap();
+				}}
 			/>
 
 			<div style={{ marginTop: 12, minHeight: 40 }}>
@@ -371,12 +479,39 @@ export default function Game100_Sundown() {
 						>
 							Try again
 						</button>
+						{Math.abs(result.offset_ms) < 60000 && (
+							<button onClick={copyShare} style={{ marginLeft: 8 }}>
+								{shareCopied ? "Copied!" : "Copy share"}
+							</button>
+						)}
 					</>
 				)}
 			</div>
 
+			{authorInfo && (
+				<div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
+					{authorInfo.current_streak > 0 && (
+						<>
+							Streak: <strong>{authorInfo.current_streak}</strong> day
+							{authorInfo.current_streak === 1 ? "" : "s"} (longest{" "}
+							{authorInfo.longest_streak}) •{" "}
+						</>
+					)}
+					Plays: {authorInfo.total_plays}
+					{authorInfo.best_abs_offset_ms != null && (
+						<>
+							{" "}
+							• Lifetime best |{authorInfo.best_abs_offset_ms}|ms
+						</>
+					)}
+					{authorInfo.percentile != null && (
+						<> • Today percentile: {authorInfo.percentile}%</>
+					)}
+				</div>
+			)}
+
 			{localBest && (
-				<div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+				<div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
 					Your best today (local): {localBest.offset_ms >= 0 ? "+" : ""}
 					{localBest.offset_ms} ms (|{localBest.abs_offset_ms}| ms)
 				</div>
@@ -457,6 +592,10 @@ export default function Game100_Sundown() {
 										: `≥${center - histogram.bucket_width_ms / 2}`
 									: `${center >= 0 ? "+" : ""}${center}`;
 								const width = Math.round((c / maxBucket) * 120);
+								const youHere =
+									result &&
+									Math.abs(result.offset_ms) < 60000 &&
+									Math.round(result.offset_ms / 100) + 5 === i;
 								return (
 									<div
 										key={i}
@@ -488,9 +627,15 @@ export default function Game100_Sundown() {
 															? "#7aa6e6"
 															: "#e67a7a",
 												borderRadius: 2,
+												outline: youHere ? "2px solid #fff" : "none",
 											}}
 										/>
 										<span style={{ opacity: 0.8 }}>{c}</span>
+										{youHere && (
+											<span style={{ marginLeft: 4, color: "#fff" }}>
+												← you
+											</span>
+										)}
 									</div>
 								);
 							})}

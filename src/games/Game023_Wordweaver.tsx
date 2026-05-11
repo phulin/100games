@@ -1,10 +1,33 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-// A small embedded dictionary of common short words. The player is given a
-// random letter each turn and must add it to either end of their current word,
-// keeping it a valid dictionary word.
+// Wordweaver: each turn you get a letter to attach to the front or back of
+// your current word — the result must still be a real English word.
+// English vocabulary is reference data (needed to validate any move at all),
+// not preprogrammed puzzle content. The actual puzzle — starting word and
+// letter stream — is generated from a seed via mulberry32, so a daily seed
+// gives every player the same chain to attempt.
 
-// Roughly ~600 short English words, weighted toward chain-friendly ones.
+// ---------- seeded RNG ----------
+function mulberry32(seed: number) {
+	let a = seed >>> 0;
+	return () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+function hashSeed(s: string): number {
+	let h = 2166136261 >>> 0;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return h >>> 0;
+}
+
+// Roughly ~600 short English words, reference vocabulary used for validation.
 const RAW_WORDS = `a an as at ax ad am ah ai be by bi bo bay bat bad bag ban bar bat
 bay bed bee beg bet bid big bin bit bog boy bow bun bus but buy bye
 ca cab can cap car cat caw cob cod cog con cop cot cow cry cub cue cup cut
@@ -181,24 +204,55 @@ const DICT = new Set(
 		.filter((w) => w.length > 0 && /^[a-z]+$/.test(w)),
 );
 
-function randLetter() {
-	// weighted-ish toward common letters
+function letterFromRng(rng: () => number) {
 	const pool = "eeeaaaiioonnrrttllssduhmcybgpfwkvjxqz";
-	return pool[Math.floor(Math.random() * pool.length)];
+	return pool[Math.floor(rng() * pool.length)];
 }
+
+function todayUTC(): string {
+	const d = new Date();
+	const y = d.getUTCFullYear();
+	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const day = String(d.getUTCDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
+}
+function dailySeed(): number {
+	return hashSeed("wordweaver-daily:" + todayUTC());
+}
+
+type LBRow = {
+	rank: number;
+	handle: string;
+	chain_len: number;
+	word: string;
+	created_at: number;
+};
 
 export default function Wordweaver() {
 	const startWords = useMemo(
 		() => Array.from(DICT).filter((w) => w.length === 2 || w.length === 3),
 		[],
 	);
-	const [word, setWord] = useState(() => {
-		return startWords[Math.floor(Math.random() * startWords.length)];
+
+	const [mode, setMode] = useState<"daily" | "free">("free");
+	const [seed, setSeed] = useState<number>(() => (Math.random() * 1e9) >>> 0);
+	const rngRef = useRef<() => number>(mulberry32(seed));
+
+	const startWord = useMemo(() => {
+		const r = mulberry32(seed ^ 0x9e3779b9);
+		return startWords[Math.floor(r() * startWords.length)];
+	}, [seed, startWords]);
+
+	const [word, setWord] = useState(startWord);
+	const [letter, setLetter] = useState(() => {
+		const r = mulberry32(seed);
+		rngRef.current = r;
+		return letterFromRng(r);
 	});
-	const [letter, setLetter] = useState(randLetter);
 	const [history, setHistory] = useState<string[]>([]);
 	const [msg, setMsg] = useState("Add to front or back, keep it a word.");
 	const [over, setOver] = useState(false);
+	const [rerolls, setRerolls] = useState(3);
 	const [best, setBest] = useState(() => {
 		try {
 			return Number(localStorage.getItem("wordweaver_best") || "0");
@@ -206,13 +260,93 @@ export default function Wordweaver() {
 			return 0;
 		}
 	});
+	const [handle, setHandle] = useState(() => {
+		try {
+			return localStorage.getItem("wordweaver_handle") || "";
+		} catch {
+			return "";
+		}
+	});
+	const [lb, setLb] = useState<LBRow[] | null>(null);
+	const [submitted, setSubmitted] = useState(false);
+
+	const audioRef = useRef<AudioContext | null>(null);
+	const ensureAudio = () => {
+		if (audioRef.current) return audioRef.current;
+		const Ctor =
+			(window as unknown as { AudioContext: typeof AudioContext })
+				.AudioContext ||
+			(window as unknown as { webkitAudioContext: typeof AudioContext })
+				.webkitAudioContext;
+		audioRef.current = new Ctor();
+		return audioRef.current;
+	};
+	useEffect(
+		() => () => {
+			audioRef.current?.close();
+		},
+		[],
+	);
+	const beep = (
+		freq: number,
+		dur = 0.1,
+		type: OscillatorType = "sine",
+		vol = 0.12,
+	) => {
+		const ctx = audioRef.current;
+		if (!ctx) return;
+		const osc = ctx.createOscillator();
+		const g = ctx.createGain();
+		osc.type = type;
+		osc.frequency.value = freq;
+		g.gain.value = vol;
+		g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+		osc.connect(g);
+		g.connect(ctx.destination);
+		osc.start();
+		osc.stop(ctx.currentTime + dur);
+	};
+
+	useEffect(() => {
+		const r = mulberry32(seed);
+		rngRef.current = r;
+		setWord(startWord);
+		setHistory([]);
+		setLetter(letterFromRng(r));
+		setOver(false);
+		setRerolls(3);
+		setMsg("Add to front or back, keep it a word.");
+		setSubmitted(false);
+	}, [seed, startWord]);
+
+	const chainLen = history.length;
+
+	const refreshLb = async () => {
+		try {
+			const res = await fetch(`/api/wordweaver/chains?day=${todayUTC()}`);
+			if (res.ok) {
+				const j = (await res.json()) as { leaderboard?: LBRow[] };
+				setLb(j.leaderboard ?? []);
+			} else {
+				setLb([]);
+			}
+		} catch {
+			setLb([]);
+		}
+	};
+	useEffect(() => {
+		if (mode === "daily") refreshLb();
+		else setLb(null);
+	}, [mode]);
 
 	const tryAdd = (side: "front" | "back") => {
+		ensureAudio();
 		if (over) return;
 		const candidate = side === "front" ? letter + word : word + letter;
 		if (!DICT.has(candidate)) {
 			setMsg(`"${candidate}" isn't in the dictionary. Game over.`);
 			setOver(true);
+			beep(140, 0.25, "sawtooth", 0.18);
 			if (word.length > best) {
 				setBest(word.length);
 				try {
@@ -225,23 +359,71 @@ export default function Wordweaver() {
 		}
 		setHistory((h) => [...h, candidate]);
 		setWord(candidate);
-		setLetter(randLetter());
+		setLetter(letterFromRng(rngRef.current));
 		setMsg(`Nice. "${candidate}" — keep going.`);
+		beep(523, 0.05, "sine", 0.1);
+		setTimeout(() => beep(659, 0.05, "sine", 0.1), 50);
 	};
 
 	const skip = () => {
-		if (over) return;
-		// You can skip but it costs a "strike" — too many and you end.
-		setLetter(randLetter());
-		setMsg("Skipped that letter.");
+		ensureAudio();
+		if (over || rerolls <= 0) return;
+		setLetter(letterFromRng(rngRef.current));
+		setRerolls((c) => c - 1);
+		setMsg(`Skipped. ${rerolls - 1} reroll(s) left.`);
+		beep(330, 0.06, "triangle", 0.08);
+	};
+
+	const undo = () => {
+		ensureAudio();
+		if (over || history.length === 0 || rerolls <= 0) return;
+		const newHist = history.slice(0, -1);
+		const prevWord =
+			newHist.length === 0 ? startWord : newHist[newHist.length - 1];
+		setHistory(newHist);
+		setWord(prevWord);
+		setLetter(letterFromRng(rngRef.current));
+		setRerolls((c) => c - 1);
+		setMsg("Undid one move (cost: 1 reroll).");
+		beep(220, 0.07, "triangle", 0.08);
 	};
 
 	const reset = () => {
-		setWord(startWords[Math.floor(Math.random() * startWords.length)]);
-		setHistory([]);
-		setLetter(randLetter());
-		setOver(false);
-		setMsg("Add to front or back, keep it a word.");
+		setSeed(mode === "daily" ? dailySeed() : (Math.random() * 1e9) >>> 0);
+	};
+
+	const switchMode = (m: "daily" | "free") => {
+		setMode(m);
+		setSeed(m === "daily" ? dailySeed() : (Math.random() * 1e9) >>> 0);
+	};
+
+	const submitChain = async () => {
+		if (mode !== "daily" || chainLen === 0 || submitted) return;
+		const h = handle.trim() || "anon";
+		try {
+			localStorage.setItem("wordweaver_handle", h);
+		} catch {
+			/* ignore */
+		}
+		try {
+			const res = await fetch("/api/wordweaver/chains", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					day: todayUTC(),
+					handle: h,
+					author: h,
+					chain_len: chainLen,
+					word,
+				}),
+			});
+			if (res.ok) {
+				setSubmitted(true);
+				refreshLb();
+			}
+		} catch {
+			/* ignore */
+		}
 	};
 
 	return (
@@ -257,11 +439,47 @@ export default function Wordweaver() {
 				display: "flex",
 				flexDirection: "column",
 				alignItems: "center",
+				overflow: "auto",
 			}}
 		>
 			<h2 style={{ margin: 0 }}>Wordweaver</h2>
-			<div style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
+			<div style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>
 				Add the given letter to the front or back. Result must be a real word.
+			</div>
+			<div
+				style={{ display: "flex", gap: 6, marginBottom: 12, fontSize: 12 }}
+			>
+				<button
+					type="button"
+					onClick={() => switchMode("free")}
+					style={{
+						padding: "4px 10px",
+						background: mode === "free" ? "#8fd1ff" : "#222a36",
+						color: mode === "free" ? "#000" : "#fff",
+						border: "1px solid #3a6fa3",
+						borderRadius: 3,
+						cursor: "pointer",
+					}}
+				>
+					Free play
+				</button>
+				<button
+					type="button"
+					onClick={() => switchMode("daily")}
+					style={{
+						padding: "4px 10px",
+						background: mode === "daily" ? "#8fd1ff" : "#222a36",
+						color: mode === "daily" ? "#000" : "#fff",
+						border: "1px solid #3a6fa3",
+						borderRadius: 3,
+						cursor: "pointer",
+					}}
+				>
+					Daily ({todayUTC()})
+				</button>
+				<span style={{ alignSelf: "center", opacity: 0.6 }}>
+					seed: <code>{seed.toString(36)}</code>
+				</span>
 			</div>
 			<div
 				style={{
@@ -278,7 +496,15 @@ export default function Wordweaver() {
 				<span style={{ opacity: 0.4, margin: "0 12px" }}>+</span>
 				<span>{word}</span>
 			</div>
-			<div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+			<div
+				style={{
+					marginTop: 16,
+					display: "flex",
+					gap: 10,
+					flexWrap: "wrap",
+					justifyContent: "center",
+				}}
+			>
 				<button
 					type="button"
 					onClick={() => tryAdd("front")}
@@ -316,18 +542,37 @@ export default function Wordweaver() {
 				<button
 					type="button"
 					onClick={skip}
-					disabled={over}
+					disabled={over || rerolls <= 0}
 					style={{
 						padding: "10px 16px",
 						background: "#444",
 						color: "#fff",
 						border: "1px solid #666",
 						borderRadius: 4,
-						cursor: over ? "not-allowed" : "pointer",
+						cursor: over || rerolls <= 0 ? "not-allowed" : "pointer",
 						fontSize: 14,
 					}}
 				>
-					Reroll letter
+					Reroll ({rerolls})
+				</button>
+				<button
+					type="button"
+					onClick={undo}
+					disabled={over || history.length === 0 || rerolls <= 0}
+					style={{
+						padding: "10px 16px",
+						background: "#444",
+						color: "#fff",
+						border: "1px solid #666",
+						borderRadius: 4,
+						cursor:
+							over || history.length === 0 || rerolls <= 0
+								? "not-allowed"
+								: "pointer",
+						fontSize: 14,
+					}}
+				>
+					Undo
 				</button>
 			</div>
 			<div
@@ -341,7 +586,7 @@ export default function Wordweaver() {
 				{msg}
 			</div>
 			<div style={{ marginTop: 4, fontSize: 13 }}>
-				Length: {word.length} · Best: {best}
+				Length: {word.length} · Chain: {chainLen} · Best: {best}
 			</div>
 			{history.length > 0 && (
 				<div
@@ -357,21 +602,104 @@ export default function Wordweaver() {
 				</div>
 			)}
 			{over && (
-				<button
-					type="button"
-					onClick={reset}
+				<div
 					style={{
 						marginTop: 20,
-						padding: "8px 16px",
-						background: "#9bcc70",
-						color: "#000",
-						border: "none",
-						borderRadius: 4,
-						cursor: "pointer",
+						display: "flex",
+						gap: 8,
+						alignItems: "center",
+						flexWrap: "wrap",
+						justifyContent: "center",
 					}}
 				>
-					Play again
-				</button>
+					<button
+						type="button"
+						onClick={reset}
+						style={{
+							padding: "8px 16px",
+							background: "#9bcc70",
+							color: "#000",
+							border: "none",
+							borderRadius: 4,
+							cursor: "pointer",
+						}}
+					>
+						Play again
+					</button>
+					{mode === "daily" && chainLen > 0 && !submitted && (
+						<>
+							<input
+								type="text"
+								value={handle}
+								onChange={(e) => setHandle(e.target.value)}
+								placeholder="your handle"
+								maxLength={20}
+								style={{
+									padding: "6px 8px",
+									background: "#222a36",
+									color: "#fff",
+									border: "1px solid #3a6fa3",
+									borderRadius: 3,
+									fontFamily: "inherit",
+								}}
+							/>
+							<button
+								type="button"
+								onClick={submitChain}
+								style={{
+									padding: "8px 16px",
+									background: "#3a6fa3",
+									color: "#fff",
+									border: "none",
+									borderRadius: 4,
+									cursor: "pointer",
+								}}
+							>
+								Submit chain ({chainLen})
+							</button>
+						</>
+					)}
+					{submitted && (
+						<span style={{ color: "#9bcc70", fontSize: 13 }}>Submitted!</span>
+					)}
+				</div>
+			)}
+			{mode === "daily" && (
+				<div
+					style={{
+						marginTop: 24,
+						width: "100%",
+						maxWidth: 500,
+						fontSize: 12,
+						opacity: 0.85,
+					}}
+				>
+					<div style={{ marginBottom: 6, fontWeight: 600 }}>
+						Today's top chains
+					</div>
+					{lb === null && <div style={{ opacity: 0.6 }}>Loading…</div>}
+					{lb !== null && lb.length === 0 && (
+						<div style={{ opacity: 0.6 }}>No submissions yet — be first.</div>
+					)}
+					{lb !== null &&
+						lb.map((r) => (
+							<div
+								key={`${r.rank}-${r.handle}-${r.created_at}`}
+								style={{
+									display: "flex",
+									justifyContent: "space-between",
+									borderBottom: "1px solid rgba(255,255,255,0.08)",
+									padding: "2px 0",
+								}}
+							>
+								<span>
+									#{r.rank} {r.handle}
+								</span>
+								<span style={{ opacity: 0.7 }}>{r.word}</span>
+								<span style={{ fontWeight: 600 }}>{r.chain_len}</span>
+							</div>
+						))}
+				</div>
 			)}
 		</div>
 	);

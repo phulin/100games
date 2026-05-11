@@ -7,10 +7,6 @@ const MAX_AUTHOR_LEN = 128;
 const MAX_OFFSET_ABS = 60000;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// Histogram: 11 buckets across -500..+500 with overflow on the ends.
-// Buckets centered every 100ms: [-Inf,-450), [-450,-350), [-350,-250),
-// [-250,-150), [-150,-50), [-50,+50), [+50,+150), [+150,+250),
-// [+250,+350), [+350,+450), [+450,+Inf).
 const BUCKET_COUNT = 11;
 const BUCKET_WIDTH = 100;
 const BUCKET_CENTERS = Array.from(
@@ -19,7 +15,6 @@ const BUCKET_CENTERS = Array.from(
 );
 
 function bucketFor(offset_ms: number): number {
-	// Map offset to nearest center index, clamped to [0, BUCKET_COUNT-1].
 	const idx = Math.round(offset_ms / BUCKET_WIDTH) + 5;
 	if (idx < 0) return 0;
 	if (idx > BUCKET_COUNT - 1) return BUCKET_COUNT - 1;
@@ -32,6 +27,15 @@ function todayUTC(): string {
 	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
 	const day = String(d.getUTCDate()).padStart(2, "0");
 	return `${y}-${m}-${day}`;
+}
+
+function prevDay(day: string): string {
+	const d = new Date(`${day}T00:00:00Z`);
+	d.setUTCDate(d.getUTCDate() - 1);
+	const y = d.getUTCFullYear();
+	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const dd = String(d.getUTCDate()).padStart(2, "0");
+	return `${y}-${m}-${dd}`;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -47,6 +51,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
 	if (request.method === "GET") {
 		const day = url.searchParams.get("day") || todayUTC();
+		const author = url.searchParams.get("author") || "";
 		if (!DAY_RE.test(day)) {
 			return json({ error: "invalid 'day' format, want YYYY-MM-DD" }, 400);
 		}
@@ -64,14 +69,66 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 				}>();
 
 			const allRes = await env.DB.prepare(
-				"SELECT offset_ms FROM sundown_scores WHERE day = ?1",
+				"SELECT offset_ms, abs_offset_ms FROM sundown_scores WHERE day = ?1",
 			)
 				.bind(day)
-				.all<{ offset_ms: number }>();
+				.all<{ offset_ms: number; abs_offset_ms: number }>();
 
 			const counts = new Array<number>(BUCKET_COUNT).fill(0);
+			const allAbs: number[] = [];
 			for (const r of allRes.results ?? []) {
 				counts[bucketFor(r.offset_ms)]++;
+				allAbs.push(r.abs_offset_ms);
+			}
+
+			let authorInfo: {
+				rank: number | null;
+				percentile: number | null;
+				best_abs_offset_ms: number | null;
+				current_streak: number;
+				longest_streak: number;
+				total_plays: number;
+			} | null = null;
+			if (author && author.length <= MAX_AUTHOR_LEN) {
+				const myToday = await env.DB.prepare(
+					"SELECT abs_offset_ms FROM sundown_scores WHERE day = ?1 AND author = ?2",
+				)
+					.bind(day, author)
+					.first<{ abs_offset_ms: number }>();
+				let stats: {
+					current_streak: number;
+					longest_streak: number;
+					total_plays: number;
+					best_abs_offset_ms: number | null;
+				} | null = null;
+				try {
+					stats = await env.DB.prepare(
+						"SELECT current_streak, longest_streak, total_plays, best_abs_offset_ms FROM sundown_author_stats WHERE author = ?1",
+					)
+						.bind(author)
+						.first();
+				} catch {
+					/* table may not exist yet — ignore */
+				}
+				let rank: number | null = null;
+				let percentile: number | null = null;
+				if (myToday) {
+					let better = 0;
+					for (const a of allAbs) if (a < myToday.abs_offset_ms) better++;
+					rank = better + 1;
+					percentile =
+						allAbs.length > 0
+							? Math.round(((allAbs.length - better) / allAbs.length) * 100)
+							: null;
+				}
+				authorInfo = {
+					rank,
+					percentile,
+					best_abs_offset_ms: stats?.best_abs_offset_ms ?? null,
+					current_streak: stats?.current_streak ?? 0,
+					longest_streak: stats?.longest_streak ?? 0,
+					total_plays: stats?.total_plays ?? 0,
+				};
 			}
 
 			return json({
@@ -89,6 +146,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 					counts,
 					total: (allRes.results ?? []).length,
 				},
+				author: authorInfo,
 			});
 		} catch (e) {
 			return json({ error: "db error", detail: String(e) }, 500);
@@ -130,7 +188,6 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 		const created_at = Date.now();
 
 		try {
-			// UPSERT keeping best (lowest abs_offset_ms).
 			await env.DB.prepare(
 				`INSERT INTO sundown_scores (day, author, handle, offset_ms, abs_offset_ms, created_at)
 				 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -144,7 +201,69 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 				.bind(day, author, handle, offset_ms, abs_offset_ms, created_at)
 				.run();
 
-			const best = await env.DB.prepare(
+			let current_streak = 1;
+			let longest_streak = 1;
+			let total_plays = 1;
+			let best = abs_offset_ms;
+			try {
+				const prior = await env.DB.prepare(
+					"SELECT current_streak, longest_streak, last_day, total_plays, best_abs_offset_ms FROM sundown_author_stats WHERE author = ?1",
+				)
+					.bind(author)
+					.first<{
+						current_streak: number;
+						longest_streak: number;
+						last_day: string | null;
+						total_plays: number;
+						best_abs_offset_ms: number | null;
+					}>();
+
+				if (prior) {
+					total_plays = prior.total_plays + (prior.last_day === day ? 0 : 1);
+					best =
+						prior.best_abs_offset_ms == null
+							? abs_offset_ms
+							: Math.min(prior.best_abs_offset_ms, abs_offset_ms);
+					if (prior.last_day === day) {
+						current_streak = prior.current_streak || 1;
+						longest_streak = Math.max(prior.longest_streak, current_streak);
+					} else if (prior.last_day === prevDay(day)) {
+						current_streak = prior.current_streak + 1;
+						longest_streak = Math.max(prior.longest_streak, current_streak);
+					} else {
+						current_streak = 1;
+						longest_streak = Math.max(prior.longest_streak, 1);
+					}
+				}
+
+				await env.DB.prepare(
+					`INSERT INTO sundown_author_stats (author, handle, current_streak, longest_streak, last_day, total_plays, best_abs_offset_ms, updated_at)
+					 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+					 ON CONFLICT(author) DO UPDATE SET
+					   handle = excluded.handle,
+					   current_streak = excluded.current_streak,
+					   longest_streak = excluded.longest_streak,
+					   last_day = excluded.last_day,
+					   total_plays = excluded.total_plays,
+					   best_abs_offset_ms = excluded.best_abs_offset_ms,
+					   updated_at = excluded.updated_at`,
+				)
+					.bind(
+						author,
+						handle,
+						current_streak,
+						longest_streak,
+						day,
+						total_plays,
+						best,
+						created_at,
+					)
+					.run();
+			} catch {
+				/* stats table may not yet exist; non-fatal */
+			}
+
+			const bestRow = await env.DB.prepare(
 				"SELECT offset_ms, abs_offset_ms FROM sundown_scores WHERE day = ?1 AND author = ?2",
 			)
 				.bind(day, author)
@@ -154,7 +273,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 				ok: true,
 				day,
 				submitted: { offset_ms, abs_offset_ms },
-				best,
+				best: bestRow,
+				stats: {
+					current_streak,
+					longest_streak,
+					total_plays,
+					best_abs_offset_ms: best,
+				},
 			});
 		} catch (e) {
 			return json({ error: "db error", detail: String(e) }, 500);

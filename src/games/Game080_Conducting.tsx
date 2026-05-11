@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // Game 80 — Conducting
-// Mouse height controls section volume; horizontal position selects section.
-// Match a target dynamic curve over time.
+// Procedural target curves (seeded). Multiple sections.
+// Touch & keyboard control, replay, harmonics polish, best score persisted.
 
 const SECTIONS = [
 	{ name: "Strings", color: "#d96", base: 220, type: "sawtooth" as OscillatorType },
@@ -11,43 +11,91 @@ const SECTIONS = [
 	{ name: "Percussion", color: "#d69", base: 110, type: "sine" as OscillatorType },
 ];
 
-const DURATION = 30; // seconds
+const DURATION = 30;
 const SAMPLES_PER_SEC = 5;
+const BEST_KEY = "conducting:best";
 
-// target dynamic curves per section: array of volumes 0..1 sampled
-function makeTarget(): number[][] {
+function mulberry32(seed: number) {
+	let s = seed >>> 0;
+	return () => {
+		s = (s + 0x6d2b79f5) >>> 0;
+		let t = s;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+function makeTarget(seed: number): number[][] {
+	const rnd = mulberry32(seed);
 	return SECTIONS.map((_, s) => {
 		const arr: number[] = [];
-		const phase = s * 1.3;
-		const freq = 0.1 + s * 0.05;
+		const harmonics = 2 + Math.floor(rnd() * 3);
+		const params: Array<{ amp: number; freq: number; phase: number }> = [];
+		for (let h = 0; h < harmonics; h++) {
+			params.push({
+				amp: 0.15 + rnd() * 0.35,
+				freq: 0.05 + rnd() * 0.25,
+				phase: rnd() * Math.PI * 2,
+			});
+		}
+		const silences: Array<[number, number]> = [];
+		const nSil = Math.floor(rnd() * 3);
+		for (let i = 0; i < nSil; i++) {
+			const start = rnd() * DURATION * 0.8;
+			const len = 1 + rnd() * 4;
+			silences.push([start, start + len]);
+		}
 		for (let i = 0; i < DURATION * SAMPLES_PER_SEC; i++) {
 			const t = i / SAMPLES_PER_SEC;
-			let v = 0.4 + 0.4 * Math.sin(t * freq * Math.PI * 2 + phase);
-			// some sections silent at points
-			if (s === 2 && t < 8) v *= 0.05;
-			if (s === 3 && (t < 5 || (t > 15 && t < 20))) v *= 0.05;
-			arr.push(Math.max(0, Math.min(1, v)));
+			let v = 0.4;
+			for (const p of params) {
+				v += p.amp * Math.sin(t * p.freq * Math.PI * 2 + p.phase);
+			}
+			v /= 1 + harmonics * 0.4;
+			v = Math.max(0, Math.min(1, v));
+			for (const [a, b] of silences) {
+				if (t >= a && t <= b) v *= 0.05;
+			}
+			arr.push(v);
+		}
+		if (s === 2 && rnd() > 0.5) {
+			for (let i = 0; i < arr.length; i++) {
+				if (i % 7 === 0) arr[i] = Math.min(1, arr[i] + 0.2);
+			}
 		}
 		return arr;
 	});
 }
 
 export default function Game080_Conducting() {
+	const [seed, setSeed] = useState<number>(() => (Math.random() * 1e9) | 0);
 	const [time, setTime] = useState(0);
 	const [playing, setPlaying] = useState(false);
-	const [target] = useState(() => makeTarget());
+	const target = useMemo(() => makeTarget(seed), [seed]);
 	const [played, setPlayed] = useState<number[][]>(() =>
-		SECTIONS.map(() => Array(DURATION * SAMPLES_PER_SEC).fill(0))
+		SECTIONS.map(() => Array(DURATION * SAMPLES_PER_SEC).fill(0)),
 	);
 	const [score, setScore] = useState<number | null>(null);
+	const [best, setBest] = useState<number>(() => {
+		try {
+			return parseInt(localStorage.getItem(BEST_KEY) || "0") || 0;
+		} catch {
+			return 0;
+		}
+	});
+	const [replay, setReplay] = useState<number[][] | null>(null);
 
 	const mouseRef = useRef({ x: 0.5, y: 0.5 });
 	const containerRef = useRef<HTMLDivElement>(null);
 	const last = useRef<number | null>(null);
 	const accSampler = useRef(0);
+	const keyRef = useRef<{ section: number; vol: number }>({ section: -1, vol: 0 });
 
 	const audioCtx = useRef<AudioContext | null>(null);
-	const oscs = useRef<{ o: OscillatorNode; g: GainNode }[]>([]);
+	const oscs = useRef<
+		Array<{ o: OscillatorNode; g: GainNode; o2?: OscillatorNode; g2?: GainNode }>
+	>([]);
 
 	useEffect(() => {
 		const onMove = (e: MouseEvent) => {
@@ -56,11 +104,30 @@ export default function Game080_Conducting() {
 			mouseRef.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
 			mouseRef.current.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / r.height));
 		};
+		const onTouch = (e: TouchEvent) => {
+			if (!containerRef.current || !e.touches[0]) return;
+			const r = containerRef.current.getBoundingClientRect();
+			const t = e.touches[0];
+			mouseRef.current.x = Math.max(0, Math.min(1, (t.clientX - r.left) / r.width));
+			mouseRef.current.y = Math.max(0, Math.min(1, 1 - (t.clientY - r.top) / r.height));
+		};
+		const onKey = (e: KeyboardEvent) => {
+			const map: Record<string, number> = { "1": 0, "2": 1, "3": 2, "4": 3 };
+			if (map[e.key] !== undefined) keyRef.current.section = map[e.key];
+			if (e.key === "ArrowUp") keyRef.current.vol = Math.min(1, keyRef.current.vol + 0.1);
+			if (e.key === "ArrowDown") keyRef.current.vol = Math.max(0, keyRef.current.vol - 0.1);
+		};
 		window.addEventListener("mousemove", onMove);
-		return () => window.removeEventListener("mousemove", onMove);
+		window.addEventListener("touchmove", onTouch, { passive: true });
+		window.addEventListener("keydown", onKey);
+		return () => {
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("touchmove", onTouch);
+			window.removeEventListener("keydown", onKey);
+		};
 	}, []);
 
-	const start = () => {
+	const start = (replayMode = false) => {
 		if (playing) return;
 		try {
 			audioCtx.current = new AudioContext();
@@ -72,13 +139,29 @@ export default function Game080_Conducting() {
 				g.gain.value = 0;
 				o.connect(g).connect(audioCtx.current!.destination);
 				o.start();
-				return { o, g };
+				const o2 = audioCtx.current!.createOscillator();
+				const g2 = audioCtx.current!.createGain();
+				o2.type = s.type;
+				o2.frequency.value = s.base * 2;
+				g2.gain.value = 0;
+				o2.connect(g2).connect(audioCtx.current!.destination);
+				o2.start();
+				return { o, g, o2, g2 };
 			});
 		} catch {}
 		setTime(0);
-		setPlayed(SECTIONS.map(() => Array(DURATION * SAMPLES_PER_SEC).fill(0)));
+		if (!replayMode) {
+			setPlayed(SECTIONS.map(() => Array(DURATION * SAMPLES_PER_SEC).fill(0)));
+		}
 		setScore(null);
 		setPlaying(true);
+	};
+
+	const replayLast = () => {
+		if (replay) {
+			setPlayed(replay);
+			start(true);
+		}
 	};
 
 	useEffect(() => {
@@ -94,10 +177,16 @@ export default function Game080_Conducting() {
 				accSampler.current += dt;
 				if (accSampler.current >= 1 / SAMPLES_PER_SEC) {
 					accSampler.current = 0;
-					// section based on mouse x
-					const seg = Math.floor(mouseRef.current.x * SECTIONS.length);
-					const vol = mouseRef.current.y;
-					const idx = Math.min(DURATION * SAMPLES_PER_SEC - 1, Math.floor(nt * SAMPLES_PER_SEC));
+					let seg = Math.floor(mouseRef.current.x * SECTIONS.length);
+					let vol = mouseRef.current.y;
+					if (keyRef.current.section >= 0) {
+						seg = keyRef.current.section;
+						vol = keyRef.current.vol;
+					}
+					const idx = Math.min(
+						DURATION * SAMPLES_PER_SEC - 1,
+						Math.floor(nt * SAMPLES_PER_SEC),
+					);
 					setPlayed((p) =>
 						p.map((arr, si) => {
 							if (si === seg) {
@@ -106,33 +195,53 @@ export default function Game080_Conducting() {
 								return cp;
 							}
 							return arr;
-						})
+						}),
 					);
-					// update audio gains
 					oscs.current.forEach((osc, si) => {
 						try {
+							const tg = si === seg ? vol * 0.18 : osc.g.gain.value * 0.7 || 0;
 							osc.g.gain.linearRampToValueAtTime(
-								si === seg ? vol * 0.18 : (osc.g.gain.value * 0.7) || 0,
-								audioCtx.current!.currentTime + 0.05
+								tg,
+								audioCtx.current!.currentTime + 0.05,
 							);
+							if (osc.g2) {
+								osc.g2.gain.linearRampToValueAtTime(
+									tg * 0.3,
+									audioCtx.current!.currentTime + 0.05,
+								);
+							}
 						} catch {}
 					});
 				}
 				if (nt >= DURATION) {
 					setPlaying(false);
-					// score
 					let err = 0;
 					for (let s = 0; s < SECTIONS.length; s++) {
 						for (let i = 0; i < target[s].length; i++) {
 							err += Math.abs(target[s][i] - played[s][i]);
 						}
 					}
-					const total = SECTIONS.length * DURATION * SAMPLES_PER_SEC;
-					setScore(Math.max(0, Math.round(100 - (err / total) * 100)));
-					// fade out
+					const totalSamples = SECTIONS.length * DURATION * SAMPLES_PER_SEC;
+					const sc = Math.max(0, Math.round(100 - (err / totalSamples) * 100));
+					setScore(sc);
+					setReplay(played);
+					if (sc > best) {
+						setBest(sc);
+						try {
+							localStorage.setItem(BEST_KEY, String(sc));
+						} catch {}
+					}
 					oscs.current.forEach((osc) => {
 						try {
-							osc.g.gain.linearRampToValueAtTime(0, audioCtx.current!.currentTime + 0.1);
+							osc.g.gain.linearRampToValueAtTime(
+								0,
+								audioCtx.current!.currentTime + 0.1,
+							);
+							if (osc.g2)
+								osc.g2.gain.linearRampToValueAtTime(
+									0,
+									audioCtx.current!.currentTime + 0.1,
+								);
 						} catch {}
 					});
 					return DURATION;
@@ -147,9 +256,12 @@ export default function Game080_Conducting() {
 			cancelAnimationFrame(raf);
 			last.current = null;
 		};
-	}, [playing, target, played]);
+	}, [playing, target, played, best]);
 
-	const curIdx = Math.min(DURATION * SAMPLES_PER_SEC - 1, Math.floor(time * SAMPLES_PER_SEC));
+	const curIdx = Math.min(
+		DURATION * SAMPLES_PER_SEC - 1,
+		Math.floor(time * SAMPLES_PER_SEC),
+	);
 
 	return (
 		<div
@@ -167,11 +279,16 @@ export default function Game080_Conducting() {
 				userSelect: "none",
 			}}
 		>
-			<div>
-				<b>Conducting</b> — Move mouse: x = section, height = volume. Match the target curves.
+			<div style={{ display: "flex", justifyContent: "space-between" }}>
+				<b>Conducting</b>
+				<span style={{ fontSize: 12, opacity: 0.85 }}>
+					Best: {best} · Keys 1-4 select section, ↑/↓ volume
+				</span>
+			</div>
+			<div style={{ fontSize: 12, opacity: 0.7 }}>
+				Move mouse: x = section, height = volume. Match the dashed target curves.
 			</div>
 
-			{/* Section columns */}
 			<div style={{ display: "flex", height: 240, marginTop: 12, gap: 4 }}>
 				{SECTIONS.map((s, si) => {
 					const targetV = target[si][curIdx];
@@ -213,7 +330,6 @@ export default function Game080_Conducting() {
 				})}
 			</div>
 
-			{/* Timeline visualization */}
 			<div style={{ marginTop: 10 }}>
 				<div style={{ fontSize: 12, opacity: 0.7 }}>
 					Time: {time.toFixed(1)}s / {DURATION}s
@@ -254,9 +370,32 @@ export default function Game080_Conducting() {
 				</svg>
 			</div>
 
-			<div style={{ marginTop: 8 }}>
-				<button onClick={start} disabled={playing} style={{ padding: "8px 18px", fontSize: 14 }}>
+			<div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+				<button
+					onClick={() => start(false)}
+					disabled={playing}
+					style={{ padding: "8px 18px", fontSize: 14 }}
+				>
 					{playing ? "Conducting…" : "Begin"}
+				</button>
+				<button
+					onClick={replayLast}
+					disabled={playing || !replay}
+					style={{ padding: "6px 14px", fontSize: 13 }}
+				>
+					Replay
+				</button>
+				<button
+					onClick={() => {
+						setSeed((Math.random() * 1e9) | 0);
+						setScore(null);
+						setReplay(null);
+						setPlayed(SECTIONS.map(() => Array(DURATION * SAMPLES_PER_SEC).fill(0)));
+					}}
+					disabled={playing}
+					style={{ padding: "6px 14px", fontSize: 13 }}
+				>
+					New score
 				</button>
 				{score !== null && (
 					<span style={{ marginLeft: 14, fontSize: 20 }}>

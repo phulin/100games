@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 
-// Seven elements with rock-paper-scissors-ish chart (each beats 3, loses to 3).
 const ELEMENTS = [
 	"Fire",
 	"Water",
@@ -12,10 +11,49 @@ const ELEMENTS = [
 ] as const;
 type Element = (typeof ELEMENTS)[number];
 
-const SEALED_ROUNDS = 5;
+const DEFAULT_ROUNDS = 5;
+const MIN_ROUNDS = 3;
+const MAX_ROUNDS = 9;
 
-// beats[i] = list of indices that element i beats.
-// We use the pattern: i beats (i+1), (i+2), (i+3) mod 7.
+// WebAudio helpers.
+let _ac: AudioContext | null = null;
+function ac(): AudioContext | null {
+	if (typeof window === "undefined") return null;
+	if (!_ac) {
+		const W = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+		const Ctor = W.AudioContext ?? W.webkitAudioContext;
+		if (!Ctor) return null;
+		_ac = new Ctor();
+	}
+	return _ac;
+}
+function blip(freq: number, dur: number, type: OscillatorType = "sine", vol = 0.12) {
+	const a = ac();
+	if (!a) return;
+	const o = a.createOscillator();
+	const g = a.createGain();
+	o.type = type;
+	o.frequency.value = freq;
+	g.gain.value = vol;
+	g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+	o.connect(g).connect(a.destination);
+	o.start();
+	o.stop(a.currentTime + dur);
+}
+const ELEMENT_FREQ: Record<Element, number> = {
+	Fire: 392, Water: 261, Earth: 196, Air: 587, Lightning: 880, Ice: 698, Void: 110,
+};
+function castSound(e: Element) { blip(ELEMENT_FREQ[e], 0.18, "triangle", 0.14); }
+function winChord() {
+	blip(523, 0.25, "sine", 0.18);
+	setTimeout(() => blip(659, 0.25, "sine", 0.18), 110);
+	setTimeout(() => blip(784, 0.35, "sine", 0.18), 240);
+}
+function loseChord() {
+	blip(220, 0.4, "sawtooth", 0.18);
+	setTimeout(() => blip(155, 0.5, "sawtooth", 0.16), 200);
+}
+
 function beats(a: number, b: number): "a" | "b" | "tie" {
 	if (a === b) return "tie";
 	const diff = (b - a + 7) % 7;
@@ -66,34 +104,38 @@ const elementColor = (e: Element) => {
 	return map[e];
 };
 
+type Difficulty = "novice" | "adept" | "archmage";
+
 export default function Game090_MageDuel() {
-	// Local AI duel state (unchanged behavior).
 	const [playerWins, setPlayerWins] = useState(0);
 	const [aiWins, setAiWins] = useState(0);
 	const [log, setLog] = useState<RoundLog[]>([]);
 	const [over, setOver] = useState(false);
+	const [difficulty, setDifficulty] = useState<Difficulty>("adept");
+	const [hoverElement, setHoverElement] = useState<Element | null>(null);
 
-	// AI strategy: weighted by history of player picks; slight bias to counter.
 	const aiPick = (): Element => {
-		if (log.length === 0) {
-			return ELEMENTS[Math.floor(Math.random() * 7)];
-		}
+		const noiseLevel = difficulty === "novice" ? 0.7 : difficulty === "adept" ? 0.4 : 0.1;
+		const counterChance = difficulty === "novice" ? 0.55 : difficulty === "adept" ? 0.85 : 0.97;
+		if (log.length === 0) return ELEMENTS[Math.floor(Math.random() * 7)];
 		const counts = new Array(7).fill(0);
-		for (const r of log) counts[ELEMENTS.indexOf(r.player)]++;
-		const noise = Math.random();
+		for (let i = 0; i < log.length; i++) {
+			const w = 1 + i * 0.4;
+			counts[ELEMENTS.indexOf(log[i].player)] += w;
+		}
 		let predicted = 0;
-		if (noise < 0.6) {
+		if (Math.random() < 1 - noiseLevel) {
 			let best = -1;
 			for (let i = 0; i < 7; i++) if (counts[i] > best) { best = counts[i]; predicted = i; }
 		} else {
 			predicted = Math.floor(Math.random() * 7);
 		}
-		const choices: number[] = [];
-		for (let i = 0; i < 7; i++) {
-			if (beats(i, predicted) === "a") choices.push(i);
+		if (Math.random() < counterChance) {
+			const choices: number[] = [];
+			for (let i = 0; i < 7; i++) if (beats(i, predicted) === "a") choices.push(i);
+			return ELEMENTS[choices[Math.floor(Math.random() * choices.length)]];
 		}
-		const pick = choices[Math.floor(Math.random() * choices.length)];
-		return ELEMENTS[pick];
+		return ELEMENTS[Math.floor(Math.random() * 7)];
 	};
 
 	const playRound = (p: Element) => {
@@ -113,8 +155,15 @@ export default function Game090_MageDuel() {
 		else if (outcome === "b") aw += cascade;
 		setPlayerWins(pw);
 		setAiWins(aw);
+		castSound(p);
+		setTimeout(() => castSound(ai), 80);
+		setTimeout(() => {
+			if (outcome === "a") blip(660 * (cascade > 1 ? 1.5 : 1), 0.12, "triangle", 0.13);
+			else if (outcome === "b") blip(220, 0.12, "sawtooth", 0.13);
+		}, 220);
 		if (pw >= 5 || aw >= 5 || newLog.length >= 9) {
 			setOver(true);
+			setTimeout(() => (pw > aw ? winChord() : pw < aw ? loseChord() : blip(330, 0.4, "sine", 0.14)), 360);
 		}
 	};
 
@@ -137,65 +186,83 @@ export default function Game090_MageDuel() {
 		>
 			<h2 style={{ margin: 0 }}>90. Mage Duel</h2>
 			<div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-				Best of 9. Pick an element; the AI picks at the same time. Each element
-				beats the next three in the wheel. Cascades double points.
+				Best of 9. Pick an element; the AI picks at the same time. Each element beats the next three in the wheel. Cascades double points. Hover an element to see what it beats.
 			</div>
 			<div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-				<div
-					style={{
-						background: "#1a0830",
-						padding: 12,
-						borderRadius: 6,
-						minWidth: 220,
-					}}
-				>
-					<div>
-						You: <strong>{playerWins}</strong>
-					</div>
-					<div>
-						Adversary: <strong>{aiWins}</strong>
-					</div>
+				<div style={{ background: "#1a0830", padding: 12, borderRadius: 6, minWidth: 240 }}>
+					<div>You: <strong>{playerWins}</strong></div>
+					<div>Adversary: <strong>{aiWins}</strong></div>
 					<div>Rounds: {log.length}/9</div>
+					<div style={{ marginTop: 8, fontSize: 12 }}>
+						<label>
+							Adversary skill:&nbsp;
+							<select
+								value={difficulty}
+								onChange={(e) => setDifficulty(e.target.value as Difficulty)}
+								disabled={log.length > 0 && !over}
+								style={{ fontSize: 12 }}
+							>
+								<option value="novice">Novice</option>
+								<option value="adept">Adept</option>
+								<option value="archmage">Archmage</option>
+							</select>
+						</label>
+					</div>
 					{over && (
 						<div style={{ marginTop: 8, fontSize: 18 }}>
-							{playerWins > aiWins
-								? "Victory."
-								: playerWins < aiWins
-									? "Defeat."
-									: "Draw."}
+							{playerWins > aiWins ? "Victory." : playerWins < aiWins ? "Defeat." : "Draw."}
 						</div>
 					)}
-					<button
-						type="button"
-						onClick={reset}
-						style={{ ...btn, marginTop: 8 }}
-					>
-						Reset duel
-					</button>
+					<button type="button" onClick={reset} style={{ ...btn, marginTop: 8 }}>Reset duel</button>
 				</div>
 				<div style={{ flex: 1, minWidth: 320 }}>
 					<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-						{ELEMENTS.map((e) => (
-							<button
-								key={e}
-								type="button"
-								disabled={over}
-								onClick={() => playRound(e)}
-								style={{
-									...btn,
-									background: elementColor(e),
-									color: "#111",
-									minWidth: 80,
-									fontSize: 16,
-								}}
-							>
-								{e}
-							</button>
-						))}
+						{ELEMENTS.map((e, i) => {
+							const beatsList = [1, 2, 3].map((d) => ELEMENTS[(i + d) % 7]);
+							const losesList = [1, 2, 3].map((d) => ELEMENTS[(i + 7 - d) % 7]);
+							return (
+								<button
+									key={e}
+									type="button"
+									disabled={over}
+									onClick={() => playRound(e)}
+									onMouseEnter={() => setHoverElement(e)}
+									onMouseLeave={() => setHoverElement(null)}
+									title={`${e} beats: ${beatsList.join(", ")} · loses to: ${losesList.join(", ")}`}
+									style={{
+										...btn,
+										background: elementColor(e),
+										color: "#111",
+										minWidth: 80,
+										fontSize: 16,
+										outline: hoverElement === e ? "2px solid #fff" : "none",
+									}}
+								>
+									{e}
+								</button>
+							);
+						})}
 					</div>
+					{hoverElement && (() => {
+						const i = ELEMENTS.indexOf(hoverElement);
+						const beatsList = [1, 2, 3].map((d) => ELEMENTS[(i + d) % 7]);
+						const losesList = [1, 2, 3].map((d) => ELEMENTS[(i + 7 - d) % 7]);
+						return (
+							<div style={{ marginTop: 8, fontSize: 12, background: "#0e0420", padding: 6, borderRadius: 4 }}>
+								<strong style={{ color: elementColor(hoverElement) }}>{hoverElement}</strong>
+								{" "}beats{" "}
+								{beatsList.map((b) => (
+									<span key={b} style={{ color: elementColor(b), marginRight: 4 }}>{b}</span>
+								))}
+								· loses to{" "}
+								{losesList.map((b) => (
+									<span key={b} style={{ color: elementColor(b), marginRight: 4 }}>{b}</span>
+								))}
+							</div>
+						);
+					})()}
 					<div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-						Wheel order: Fire → Water → Earth → Air → Lightning → Ice → Void →
-						Fire. Each beats the next three.
+						Wheel order: Fire → Water → Earth → Air → Lightning → Ice → Void → Fire. Each beats the next three.
 					</div>
 					<div style={{ marginTop: 12 }}>
 						<div style={{ fontSize: 13, marginBottom: 4 }}>Combat log</div>
@@ -209,17 +276,12 @@ export default function Game090_MageDuel() {
 								fontSize: 13,
 							}}
 						>
-							{log.length === 0 && (
-								<div style={{ opacity: 0.6 }}>No rounds yet.</div>
-							)}
+							{log.length === 0 && <div style={{ opacity: 0.6 }}>No rounds yet.</div>}
 							{log.map((r, i) => (
 								<div key={i} style={{ marginBottom: 4 }}>
 									#{i + 1}:{" "}
-									<span style={{ color: elementColor(r.player) }}>
-										{r.player}
-									</span>{" "}
-									vs{" "}
-									<span style={{ color: elementColor(r.ai) }}>{r.ai}</span> —{" "}
+									<span style={{ color: elementColor(r.player) }}>{r.player}</span>{" "}
+									vs <span style={{ color: elementColor(r.ai) }}>{r.ai}</span> —{" "}
 									{r.outcome === "tie"
 										? "Tie"
 										: r.outcome === "a"
@@ -253,14 +315,7 @@ function AsyncPvpPanel() {
 				padding: 12,
 			}}
 		>
-			<div
-				style={{
-					display: "flex",
-					alignItems: "baseline",
-					gap: 12,
-					flexWrap: "wrap",
-				}}
-			>
+			<div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
 				<div style={{ fontSize: 16, fontWeight: "bold" }}>Async PvP</div>
 				<div style={{ fontSize: 11, opacity: 0.7 }}>
 					You: <span style={{ fontFamily: "monospace" }}>{author}</span>
@@ -272,17 +327,9 @@ function AsyncPvpPanel() {
 						key={t}
 						type="button"
 						onClick={() => setTab(t)}
-						style={{
-							...btn,
-							background: tab === t ? "#885090" : "#3a1a4a",
-							fontSize: 13,
-						}}
+						style={{ ...btn, background: tab === t ? "#885090" : "#3a1a4a", fontSize: 13 }}
 					>
-						{t === "challenge"
-							? "Challenge"
-							: t === "answer"
-								? "Answer"
-								: "History"}
+						{t === "challenge" ? "Challenge" : t === "answer" ? "Answer" : "History"}
 					</button>
 				))}
 			</div>
@@ -310,6 +357,7 @@ function SeqPicker({
 		if (disabled) return;
 		if (seq.length >= rounds) return;
 		setSeq([...seq, i]);
+		castSound(ELEMENTS[i]);
 	};
 	const undo = () => {
 		if (disabled) return;
@@ -371,22 +419,25 @@ function SeqPicker({
 
 function ChallengeTab({ author }: { author: string }) {
 	const [seq, setSeq] = useState<number[]>([]);
+	const [rounds, setRounds] = useState<number>(DEFAULT_ROUNDS);
 	const [status, setStatus] = useState<string>("");
 	const [posting, setPosting] = useState(false);
 
+	const setRoundsClamp = (n: number) => {
+		const clamped = Math.max(MIN_ROUNDS, Math.min(MAX_ROUNDS, n));
+		setRounds(clamped);
+		if (seq.length > clamped) setSeq(seq.slice(0, clamped));
+	};
+
 	const post = async () => {
-		if (seq.length !== SEALED_ROUNDS) return;
+		if (seq.length !== rounds) return;
 		setPosting(true);
 		setStatus("Sealing…");
 		try {
 			const res = await fetch("/api/mage-duel/matches", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					action: "create",
-					author,
-					challenger_seq: seq,
-				}),
+				body: JSON.stringify({ action: "create", author, challenger_seq: seq }),
 			});
 			const data = (await res.json()) as { match?: { id: number }; error?: string };
 			if (!res.ok || data.error) {
@@ -394,6 +445,7 @@ function ChallengeTab({ author }: { author: string }) {
 			} else {
 				setStatus(`Challenge #${data.match?.id ?? "?"} posted.`);
 				setSeq([]);
+				castSound("Void");
 			}
 		} catch (err) {
 			setStatus(`Network error: ${err instanceof Error ? err.message : "?"}`);
@@ -405,15 +457,26 @@ function ChallengeTab({ author }: { author: string }) {
 	return (
 		<div>
 			<div style={{ fontSize: 13, marginBottom: 8 }}>
-				Sealed sequence of {SEALED_ROUNDS} spells. The opponent will not see it
-				until they answer.
+				Sealed sequence of {rounds} spells. The opponent will not see it until they answer.
 			</div>
-			<SeqPicker seq={seq} setSeq={setSeq} rounds={SEALED_ROUNDS} disabled={posting} />
+			<div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, fontSize: 12 }}>
+				Rounds:
+				<input
+					type="range"
+					min={MIN_ROUNDS}
+					max={MAX_ROUNDS}
+					value={rounds}
+					onChange={(e) => setRoundsClamp(Number(e.target.value))}
+					disabled={posting}
+				/>
+				<strong>{rounds}</strong>
+			</div>
+			<SeqPicker seq={seq} setSeq={setSeq} rounds={rounds} disabled={posting} />
 			<div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
 				<button
 					type="button"
 					onClick={post}
-					disabled={posting || seq.length !== SEALED_ROUNDS}
+					disabled={posting || seq.length !== rounds}
 					style={{ ...btn }}
 				>
 					Post sealed challenge
@@ -435,6 +498,55 @@ function parseSeq(s: number[] | string | null | undefined): number[] | null {
 	}
 }
 
+function MatchPlayback({ match }: { match: PvpMatch }) {
+	const cs = parseSeq(match.challenger_seq) ?? [];
+	const ds = parseSeq(match.defender_seq) ?? [];
+	const rounds = Math.min(cs.length, ds.length);
+	const [step, setStep] = useState(0);
+
+	useEffect(() => {
+		setStep(0);
+		if (rounds === 0) return;
+		const id = setInterval(() => {
+			setStep((s) => {
+				if (s >= rounds) {
+					clearInterval(id);
+					return s;
+				}
+				const c = cs[s];
+				const d = ds[s];
+				castSound(ELEMENTS[c]);
+				setTimeout(() => castSound(ELEMENTS[d]), 90);
+				const o = beats(c, d);
+				if (o === "a") setTimeout(() => blip(660, 0.12, "triangle", 0.12), 200);
+				else if (o === "b") setTimeout(() => blip(220, 0.12, "sawtooth", 0.12), 200);
+				return s + 1;
+			});
+		}, 700);
+		return () => clearInterval(id);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [match.id]);
+
+	return (
+		<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+			{Array.from({ length: rounds }).map((_, i) => {
+				const c = cs[i];
+				const d = ds[i];
+				const o = beats(c, d);
+				const revealed = i < step;
+				return (
+					<div key={i} style={{ fontSize: 13, opacity: revealed ? 1 : 0.25, transition: "opacity 0.2s" }}>
+						#{i + 1}:{" "}
+						<span style={{ color: elementColor(ELEMENTS[c]) }}>{ELEMENTS[c]}</span>{" "}
+						vs <span style={{ color: elementColor(ELEMENTS[d]) }}>{ELEMENTS[d]}</span> —{" "}
+						{o === "tie" ? "Tie" : o === "a" ? "Challenger" : "Defender"}
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
 function AnswerTab({ author }: { author: string }) {
 	const [matches, setMatches] = useState<PvpMatch[]>([]);
 	const [loading, setLoading] = useState(false);
@@ -454,11 +566,8 @@ function AnswerTab({ author }: { author: string }) {
 				body: JSON.stringify({ action: "open", author }),
 			});
 			const data = (await res.json()) as { matches?: PvpMatch[]; error?: string };
-			if (!res.ok || data.error) {
-				setStatus(`Error: ${data.error ?? res.statusText}`);
-			} else {
-				setMatches(data.matches ?? []);
-			}
+			if (!res.ok || data.error) setStatus(`Error: ${data.error ?? res.statusText}`);
+			else setMatches(data.matches ?? []);
 		} catch (err) {
 			setStatus(`Network error: ${err instanceof Error ? err.message : "?"}`);
 		} finally {
@@ -480,7 +589,7 @@ function AnswerTab({ author }: { author: string }) {
 
 	const submit = async () => {
 		if (!selected) return;
-		const rounds = selected.rounds ?? SEALED_ROUNDS;
+		const rounds = selected.rounds ?? DEFAULT_ROUNDS;
 		if (seq.length !== rounds) return;
 		setPosting(true);
 		setStatus("Resolving…");
@@ -501,7 +610,8 @@ function AnswerTab({ author }: { author: string }) {
 			} else {
 				setResolved(data.match);
 				setStatus("");
-				// remove from open list
+				if (data.match.result === "defender_win") setTimeout(winChord, 100);
+				else if (data.match.result === "challenger_win") setTimeout(loseChord, 100);
 				setMatches((prev) => prev.filter((m) => m.id !== selected.id));
 			}
 		} catch (err) {
@@ -512,9 +622,6 @@ function AnswerTab({ author }: { author: string }) {
 	};
 
 	if (resolved) {
-		const cs = parseSeq(resolved.challenger_seq) ?? [];
-		const ds = parseSeq(resolved.defender_seq) ?? [];
-		const rounds = Math.min(cs.length, ds.length);
 		const verdict =
 			resolved.result === "draw"
 				? "Draw."
@@ -527,31 +634,7 @@ function AnswerTab({ author }: { author: string }) {
 				<div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
 					Match #{resolved.id} vs {resolved.challenger}
 				</div>
-				<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-					{Array.from({ length: rounds }).map((_, i) => {
-						const c = cs[i];
-						const d = ds[i];
-						const o = beats(c, d);
-						return (
-							<div key={i} style={{ fontSize: 13 }}>
-								#{i + 1}:{" "}
-								<span style={{ color: elementColor(ELEMENTS[c]) }}>
-									{ELEMENTS[c]}
-								</span>{" "}
-								vs{" "}
-								<span style={{ color: elementColor(ELEMENTS[d]) }}>
-									{ELEMENTS[d]}
-								</span>{" "}
-								—{" "}
-								{o === "tie"
-									? "Tie"
-									: o === "a"
-										? "Challenger"
-										: "Defender"}
-							</div>
-						);
-					})}
-				</div>
+				<MatchPlayback match={resolved} />
 				<button
 					type="button"
 					onClick={() => {
@@ -568,7 +651,7 @@ function AnswerTab({ author }: { author: string }) {
 	}
 
 	if (selected) {
-		const rounds = selected.rounds ?? SEALED_ROUNDS;
+		const rounds = selected.rounds ?? DEFAULT_ROUNDS;
 		return (
 			<div>
 				<div style={{ fontSize: 13, marginBottom: 8 }}>
@@ -588,10 +671,7 @@ function AnswerTab({ author }: { author: string }) {
 					</button>
 					<button
 						type="button"
-						onClick={() => {
-							setSelected(null);
-							setSeq([]);
-						}}
+						onClick={() => { setSelected(null); setSeq([]); }}
 						disabled={posting}
 						style={{ ...btn, background: "#3a1a4a" }}
 					>
@@ -613,9 +693,7 @@ function AnswerTab({ author }: { author: string }) {
 			</div>
 			<div style={{ marginTop: 8 }}>
 				{matches.length === 0 && (
-					<div style={{ opacity: 0.6, fontSize: 13 }}>
-						No open challenges. Be the first.
-					</div>
+					<div style={{ opacity: 0.6, fontSize: 13 }}>No open challenges. Be the first.</div>
 				)}
 				{matches.map((m) => (
 					<div
@@ -635,7 +713,7 @@ function AnswerTab({ author }: { author: string }) {
 								<span style={{ fontFamily: "monospace" }}>{m.challenger}</span>
 							</div>
 							<div style={{ fontSize: 11, opacity: 0.6 }}>
-								{m.rounds ?? SEALED_ROUNDS} rounds ·{" "}
+								{m.rounds ?? DEFAULT_ROUNDS} rounds ·{" "}
 								{new Date(m.created_at).toLocaleString()}
 							</div>
 						</div>
@@ -653,6 +731,7 @@ function HistoryTab({ author }: { author: string }) {
 	const [matches, setMatches] = useState<PvpMatch[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [status, setStatus] = useState<string>("");
+	const [expanded, setExpanded] = useState<number | null>(null);
 
 	const load = async () => {
 		setLoading(true);
@@ -664,11 +743,8 @@ function HistoryTab({ author }: { author: string }) {
 				body: JSON.stringify({ action: "history", author }),
 			});
 			const data = (await res.json()) as { matches?: PvpMatch[]; error?: string };
-			if (!res.ok || data.error) {
-				setStatus(`Error: ${data.error ?? res.statusText}`);
-			} else {
-				setMatches(data.matches ?? []);
-			}
+			if (!res.ok || data.error) setStatus(`Error: ${data.error ?? res.statusText}`);
+			else setMatches(data.matches ?? []);
 		} catch (err) {
 			setStatus(`Network error: ${err instanceof Error ? err.message : "?"}`);
 		} finally {
@@ -706,6 +782,7 @@ function HistoryTab({ author }: { author: string }) {
 				{matches.map((m) => {
 					const cs = parseSeq(m.challenger_seq);
 					const ds = parseSeq(m.defender_seq);
+					const canReplay = m.resolved_at !== null && cs && ds;
 					return (
 						<div
 							key={m.id}
@@ -715,14 +792,24 @@ function HistoryTab({ author }: { author: string }) {
 								fontSize: 13,
 							}}
 						>
-							<div>
-								#{m.id} — {verdictFor(m)} — {m.challenger === author ? "as challenger" : "as defender"}
+							<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+								<div style={{ flex: 1 }}>
+									#{m.id} — {verdictFor(m)} —{" "}
+									{m.challenger === author ? "as challenger" : "as defender"}
+								</div>
+								{canReplay && (
+									<button
+										type="button"
+										onClick={() => setExpanded(expanded === m.id ? null : m.id)}
+										style={{ ...btn, fontSize: 11, padding: "2px 6px" }}
+									>
+										{expanded === m.id ? "Hide" : "Replay"}
+									</button>
+								)}
 							</div>
 							<div style={{ fontSize: 11, opacity: 0.7 }}>
 								vs{" "}
-								{m.challenger === author
-									? (m.defender ?? "—")
-									: m.challenger}{" "}
+								{m.challenger === author ? (m.defender ?? "—") : m.challenger}{" "}
 								·{" "}
 								{m.resolved_at
 									? new Date(m.resolved_at).toLocaleString()
@@ -768,6 +855,11 @@ function HistoryTab({ author }: { author: string }) {
 											))}
 										</div>
 									)}
+								</div>
+							)}
+							{expanded === m.id && canReplay && (
+								<div style={{ marginTop: 6, padding: 6, background: "#0e0420", borderRadius: 4 }}>
+									<MatchPlayback match={m} />
 								</div>
 							)}
 						</div>

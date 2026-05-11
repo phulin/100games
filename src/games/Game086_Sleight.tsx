@@ -1,73 +1,193 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-// A 12-second performance. Sequence of beats; at each beat, a prompt
-// type appears. The player must click the prompt within the window.
-// Hitting correctly raises "force strength"; missing or wrong-time raises
-// "suspicion". At the end, audience picks card based on (force - suspicion).
+// A seeded, procedurally generated stage magic performance. The player
+// must hit each prompt in its narrow timing window to "force" the audience
+// to pick the chosen card.
 
-type Prompt = {
-	t: number; // time in seconds within performance
-	type: "tap" | "wave" | "snap";
-	label: string;
+function mulberry32(seed: number) {
+	let s = seed >>> 0;
+	return () => {
+		s = (s + 0x6d2b79f5) >>> 0;
+		let t = s;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+type PromptType = "tap" | "wave" | "snap";
+type Prompt = { t: number; type: PromptType; label: string };
+
+const PROMPT_LABELS: Record<PromptType, string[]> = {
+	tap: ["Tap deck", "Tap (secure card)", "Tap (final hold)", "Tap (cut)"],
+	wave: ["Wave hand", "Wave (continue mis-direct)", "Wave (cover)"],
+	snap: ["Snap (force)", "Snap (reveal cue)", "Snap (palm)"],
 };
 
-const PERFORMANCE: Prompt[] = [
-	{ t: 1.0, type: "wave", label: "Wave hand (mis-direct)" },
-	{ t: 2.5, type: "tap", label: "Tap deck (cue card)" },
-	{ t: 4.0, type: "snap", label: "Snap (force)" },
-	{ t: 5.5, type: "wave", label: "Wave hand (continue mis-direct)" },
-	{ t: 7.2, type: "tap", label: "Tap (secure card)" },
-	{ t: 9.0, type: "snap", label: "Snap (reveal cue)" },
-	{ t: 10.5, type: "tap", label: "Tap (final hold)" },
-];
+const CARD_SUITS = ["♠", "♥", "♣", "♦"];
+const CARD_RANKS = ["A", "K", "Q", "J", "10", "9", "8", "7", "5", "3"];
 
-const WINDOW = 0.6; // seconds
+type Difficulty = "easy" | "medium" | "hard";
 
-const CARDS = ["A♠", "K♥", "Q♣", "J♦", "10♠", "9♥", "7♣", "3♦"];
-const FORCED = "K♥";
+const DIFF_CFG: Record<Difficulty, { count: number; window: number; duration: number }> = {
+	easy: { count: 6, window: 0.7, duration: 12 },
+	medium: { count: 9, window: 0.45, duration: 14 },
+	hard: { count: 13, window: 0.3, duration: 16 },
+};
+
+function generateStage(seed: number, diff: Difficulty) {
+	const rnd = mulberry32(seed);
+	const cfg = DIFF_CFG[diff];
+	const prompts: Prompt[] = [];
+	const types: PromptType[] = ["tap", "wave", "snap"];
+	const span = cfg.duration - 1.5;
+	for (let i = 0; i < cfg.count; i++) {
+		const slot = (i + 0.5) / cfg.count;
+		const jitter = (rnd() - 0.5) * (span / cfg.count) * 0.6;
+		const t = 0.9 + slot * span + jitter;
+		const type = types[Math.floor(rnd() * 3)];
+		const labels = PROMPT_LABELS[type];
+		prompts.push({ t, type, label: labels[Math.floor(rnd() * labels.length)] });
+	}
+	prompts.sort((a, b) => a.t - b.t);
+	const forcedRank = CARD_RANKS[Math.floor(rnd() * CARD_RANKS.length)];
+	const forcedSuit = CARD_SUITS[Math.floor(rnd() * CARD_SUITS.length)];
+	const deck: string[] = [];
+	const used = new Set<string>();
+	while (deck.length < 8) {
+		const c = `${CARD_RANKS[Math.floor(rnd() * CARD_RANKS.length)]}${CARD_SUITS[Math.floor(rnd() * CARD_SUITS.length)]}`;
+		if (!used.has(c)) { used.add(c); deck.push(c); }
+	}
+	const forced = `${forcedRank}${forcedSuit}`;
+	if (!used.has(forced)) deck[Math.floor(rnd() * deck.length)] = forced;
+	return { prompts, forced, deck, cfg };
+}
+
+let _ac: AudioContext | null = null;
+function ac(): AudioContext | null {
+	if (typeof window === "undefined") return null;
+	if (!_ac) {
+		const W = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+		const Ctor = W.AudioContext ?? W.webkitAudioContext;
+		if (!Ctor) return null;
+		_ac = new Ctor();
+	}
+	return _ac;
+}
+function blip(freq: number, dur: number, type: OscillatorType = "sine", vol = 0.15) {
+	const a = ac();
+	if (!a) return;
+	const o = a.createOscillator();
+	const g = a.createGain();
+	o.type = type;
+	o.frequency.value = freq;
+	g.gain.value = vol;
+	g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+	o.connect(g).connect(a.destination);
+	o.start();
+	o.stop(a.currentTime + dur);
+}
+
+const TYPE_KEY: Record<PromptType, string> = { tap: "z", wave: "x", snap: "c" };
+const HISCORE_KEY = "game086_sleight_best";
 
 export default function Game086_Sleight() {
+	const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1e9));
+	const [diff, setDiff] = useState<Difficulty>("medium");
+	const stage = useMemo(() => generateStage(seed, diff), [seed, diff]);
+	const { prompts, forced, deck, cfg } = stage;
+
 	const [running, setRunning] = useState(false);
 	const [time, setTime] = useState(0);
-	const [hits, setHits] = useState<{ idx: number; ok: boolean }[]>([]);
+	const [hits, setHits] = useState<{ idx: number; ok: boolean; off: number }[]>([]);
 	const [done, setDone] = useState(false);
 	const [pick, setPick] = useState<string | null>(null);
 	const startRef = useRef(0);
+	const lastTickRef = useRef(0);
+	const [best, setBest] = useState<number>(() => {
+		if (typeof localStorage === "undefined") return 0;
+		return Number(localStorage.getItem(HISCORE_KEY) ?? 0);
+	});
 
 	useEffect(() => {
 		if (!running) return;
 		startRef.current = performance.now();
+		lastTickRef.current = 0;
 		let raf = 0;
 		const tick = (t: number) => {
 			const elapsed = (t - startRef.current) / 1000;
 			setTime(elapsed);
-			if (elapsed > 12) {
+			const second = Math.floor(elapsed);
+			if (second !== lastTickRef.current && second > 0) {
+				lastTickRef.current = second;
+				blip(440 + (second % 4 === 0 ? 220 : 0), 0.05, "square", 0.05);
+			}
+			if (elapsed > cfg.duration) {
 				setRunning(false);
 				setDone(true);
-				// audience picks: force = #hits, suspicion = #misses + #wrongclicks tracked via hits.length
-				const goodHits = hits.filter((h) => h.ok).length;
-				const conf = goodHits / PERFORMANCE.length;
-				// Probability of picking forced card based on confidence
-				const r = Math.random();
-				if (r < 0.15 + conf * 0.8) setPick(FORCED);
-				else setPick(CARDS[Math.floor(Math.random() * CARDS.length)]);
 				return;
 			}
 			raf = requestAnimationFrame(tick);
 		};
 		raf = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(raf);
-	}, [running]);
+	}, [running, cfg.duration]);
+
+	useEffect(() => {
+		if (!done || pick !== null) return;
+		const goodHits = hits.filter((h) => h.ok).length;
+		const conf = goodHits / prompts.length;
+		const rnd = mulberry32(seed ^ 0xdeadbeef ^ goodHits);
+		const r = rnd();
+		const chosen = r < 0.12 + conf * 0.85 ? forced : deck[Math.floor(rnd() * deck.length)];
+		setPick(chosen);
+		if (chosen === forced) {
+			blip(523, 0.18, "sine", 0.2);
+			setTimeout(() => blip(784, 0.25, "sine", 0.2), 120);
+			const score = Math.round(conf * 100);
+			if (score > best) {
+				setBest(score);
+				if (typeof localStorage !== "undefined") localStorage.setItem(HISCORE_KEY, String(score));
+			}
+		} else {
+			blip(180, 0.4, "sawtooth", 0.18);
+		}
+	}, [done, pick, hits, prompts.length, seed, forced, deck, best]);
 
 	const clickPrompt = (idx: number) => {
 		if (!running) return;
 		if (hits.some((h) => h.idx === idx)) return;
-		const p = PERFORMANCE[idx];
-		const ok = Math.abs(time - p.t) < WINDOW;
-		setHits([...hits, { idx, ok }]);
+		const p = prompts[idx];
+		const off = time - p.t;
+		const ok = Math.abs(off) < cfg.window;
+		setHits((h) => [...h, { idx, ok, off }]);
+		if (ok) blip(Math.abs(off) < cfg.window * 0.3 ? 880 : 660, 0.08, "triangle", 0.15);
+		else blip(220, 0.12, "square", 0.12);
 	};
 
-	const reset = () => {
+	useEffect(() => {
+		if (!running) return;
+		const onKey = (ev: KeyboardEvent) => {
+			const k = ev.key.toLowerCase();
+			const type = (Object.keys(TYPE_KEY) as PromptType[]).find((t) => TYPE_KEY[t] === k);
+			if (!type) return;
+			ev.preventDefault();
+			for (let i = 0; i < prompts.length; i++) {
+				if (prompts[i].type !== type) continue;
+				if (hits.some((h) => h.idx === i)) continue;
+				if (Math.abs(time - prompts[i].t) < cfg.window * 1.5) {
+					clickPrompt(i);
+					return;
+				}
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [running, prompts, hits, time, cfg.window]);
+
+	const reset = (newSeed = seed) => {
+		setSeed(newSeed);
 		setRunning(false);
 		setTime(0);
 		setHits([]);
@@ -76,7 +196,14 @@ export default function Game086_Sleight() {
 	};
 
 	const goodHits = hits.filter((h) => h.ok).length;
-	const suspicion = hits.length - goodHits + (PERFORMANCE.length - goodHits);
+	const suspicion = (hits.length - goodHits) + (running ? 0 : prompts.length - goodHits);
+	const confPct = Math.max(0, 100 - suspicion * (90 / prompts.length));
+
+	const typeColor: Record<PromptType, string> = {
+		tap: "#3a86c4",
+		wave: "#c47a3a",
+		snap: "#a040c0",
+	};
 
 	return (
 		<div
@@ -90,122 +217,100 @@ export default function Game086_Sleight() {
 		>
 			<h2 style={{ margin: 0 }}>86. Sleight</h2>
 			<div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-				Click each prompt at exactly the right moment (±{WINDOW}s) to force the
-				audience to pick the {FORCED}.
+				Click (or press <kbd>Z</kbd>/<kbd>X</kbd>/<kbd>C</kbd>) each prompt within ±{cfg.window}s.
+				Force the audience to pick <strong>{forced}</strong>.
 			</div>
-			<div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
-				<button
-					type="button"
-					onClick={() => {
-						reset();
-						setRunning(true);
-					}}
-					style={btn}
-					disabled={running}
-				>
-					Begin performance
-				</button>
-				<button type="button" onClick={reset} style={btn}>
-					Reset
-				</button>
-				<div style={{ alignSelf: "center" }}>
-					Time {time.toFixed(2)}s · Hits {goodHits}/{PERFORMANCE.length}
+			<div style={{ display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+				<button type="button" onClick={() => { reset(seed); setRunning(true); }} style={btn} disabled={running}>Begin performance</button>
+				<button type="button" onClick={() => reset(Math.floor(Math.random() * 1e9))} style={btn}>New stage</button>
+				<select value={diff} onChange={(e) => { setDiff(e.target.value as Difficulty); reset(seed); }} disabled={running} style={{ ...btn, padding: "4px 8px" }}>
+					<option value="easy">Easy</option>
+					<option value="medium">Medium</option>
+					<option value="hard">Hard</option>
+				</select>
+				<div style={{ alignSelf: "center", fontSize: 12 }}>
+					Time {time.toFixed(2)}/{cfg.duration}s · Hits {goodHits}/{prompts.length} · Best {best}
 				</div>
 			</div>
-			{/* timeline */}
-			<div
-				style={{
-					position: "relative",
-					height: 80,
-					background: "#1a0830",
-					border: "1px solid #553060",
-					borderRadius: 6,
-					margin: "8px 0",
-				}}
-			>
-				{PERFORMANCE.map((p, i) => {
-					const x = (p.t / 12) * 100;
+			<div style={{ position: "relative", height: 90, background: "#1a0830", border: "1px solid #553060", borderRadius: 6, margin: "8px 0" }}>
+				{prompts.map((p, i) => {
+					const x = (p.t / cfg.duration) * 100;
 					const h = hits.find((hh) => hh.idx === i);
-					const inWin =
-						running && Math.abs(time - p.t) < WINDOW && !h;
+					const inWin = running && Math.abs(time - p.t) < cfg.window && !h;
+					const passed = running && time - p.t > cfg.window && !h;
 					return (
-						<button
-							key={i}
-							type="button"
-							onClick={() => clickPrompt(i)}
-							style={{
-								position: "absolute",
-								left: `${x}%`,
-								top: 10,
-								transform: "translateX(-50%)",
-								padding: "4px 6px",
-								background: h
-									? h.ok
-										? "#3c8"
-										: "#c44"
-									: inWin
-										? "#fa3"
-										: "#553060",
-								color: "#fff",
-								border: "1px solid #aaa",
-								borderRadius: 4,
-								fontSize: 11,
-								cursor: "pointer",
-								whiteSpace: "nowrap",
-							}}
-						>
-							{p.label}
-						</button>
+						<div key={i} style={{ position: "absolute", left: `${x}%`, top: 0, bottom: 0, transform: "translateX(-50%)" }}>
+							<button
+								type="button"
+								onClick={() => clickPrompt(i)}
+								style={{
+									position: "absolute",
+									top: 10,
+									left: "50%",
+									transform: "translateX(-50%)",
+									padding: "4px 6px",
+									background: h ? h.ok ? "#3c8" : "#c44" : inWin ? "#fa3" : passed ? "#553060" : typeColor[p.type],
+									color: "#fff",
+									border: "1px solid #aaa",
+									borderRadius: 4,
+									fontSize: 11,
+									cursor: "pointer",
+									whiteSpace: "nowrap",
+								}}
+							>
+								{p.label}
+							</button>
+							<div style={{ position: "absolute", top: 50, left: "50%", transform: "translateX(-50%)", fontSize: 10, opacity: 0.6 }}>
+								{TYPE_KEY[p.type].toUpperCase()}
+							</div>
+						</div>
 					);
 				})}
-				{/* playhead */}
-				<div
-					style={{
-						position: "absolute",
-						left: `${(time / 12) * 100}%`,
-						top: 0,
-						bottom: 0,
-						width: 2,
-						background: "#fff",
-					}}
-				/>
+				<div style={{ position: "absolute", left: `${(time / cfg.duration) * 100}%`, top: 0, bottom: 0, width: 2, background: "#fff", boxShadow: "0 0 6px #fff" }} />
 			</div>
 			<div style={{ marginTop: 12 }}>
 				<div style={{ fontSize: 13, marginBottom: 4 }}>Audience confidence:</div>
-				<div
-					style={{
-						width: 300,
-						height: 10,
-						background: "#333",
-						borderRadius: 5,
-					}}
-				>
-					<div
-						style={{
-							width: `${Math.max(0, 100 - suspicion * 10)}%`,
-							height: "100%",
-							background: "#3c8",
-							borderRadius: 5,
-						}}
-					/>
+				<div style={{ width: 300, height: 10, background: "#333", borderRadius: 5 }}>
+					<div style={{ width: `${confPct}%`, height: "100%", background: "#3c8", borderRadius: 5 }} />
+				</div>
+			</div>
+			<div style={{ marginTop: 16 }}>
+				<div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Deck on the table:</div>
+				<div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+					{deck.map((c) => {
+						const isRed = c.includes("♥") || c.includes("♦");
+						const highlighted = done && c === pick;
+						return (
+							<div
+								key={c}
+								style={{
+									width: 46,
+									height: 64,
+									background: "#fafaf2",
+									border: highlighted ? "3px solid #fa3" : "1px solid #999",
+									borderRadius: 4,
+									color: isRed ? "#c0303a" : "#111",
+									display: "flex",
+									alignItems: "center",
+									justifyContent: "center",
+									fontFamily: "Georgia, serif",
+									fontWeight: 600,
+									fontSize: 18,
+									boxShadow: highlighted ? "0 0 12px #fa3" : undefined,
+								}}
+							>
+								{c}
+							</div>
+						);
+					})}
 				</div>
 			</div>
 			{done && (
-				<div
-					style={{
-						marginTop: 20,
-						padding: 16,
-						background: "#0e0420",
-						border: "1px solid #553060",
-						borderRadius: 6,
-					}}
-				>
-					<div style={{ fontSize: 20 }}>
-						Audience picks: <strong>{pick}</strong>
-					</div>
+				<div style={{ marginTop: 20, padding: 16, background: "#0e0420", border: "1px solid #553060", borderRadius: 6 }}>
+					<div style={{ fontSize: 20 }}>Audience picks: <strong>{pick}</strong></div>
 					<div style={{ fontSize: 14, marginTop: 4 }}>
-						{pick === FORCED
-							? "Perfect force. They never suspected."
+						{pick === forced
+							? `Perfect force. They never suspected. (${Math.round((goodHits / prompts.length) * 100)}%)`
 							: "They picked freely. The trick collapsed."}
 					</div>
 				</div>

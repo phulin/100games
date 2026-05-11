@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Game 56: Compass Rose
-// Daily blindfolded-walk puzzle. Everyone gets the same puzzle each UTC day,
-// one correct destination tile. Fastest correct solves rank on the leaderboard.
+// Daily blindfolded-walk puzzle. Same UTC-day puzzle for all players; D1 leaderboard.
 
 const GRID = 7;
 const DAILY_STEPS = 8;
 const AUTHOR_KEY = "compass-rose:author";
 const HANDLE_KEY = "compass-rose:handle";
+const STREAK_KEY = "compass-rose:streak";
+const LAST_KEY = "compass-rose:lastday";
 
-type Dir = "N" | "E" | "S" | "W";
+type Dir = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
 type Round = {
 	start: { x: number; y: number };
 	steps: Dir[];
@@ -24,7 +25,6 @@ function utcDayString(d = new Date()): string {
 	return `${y}-${m}-${day}`;
 }
 
-// FNV-1a 32-bit. MUST match server.
 function seedForDay(day: string): string {
 	const input = `compass-rose:${day}`;
 	let h = 0x811c9dc5;
@@ -35,36 +35,52 @@ function seedForDay(day: string): string {
 	return String(h >>> 0);
 }
 
-function rngFromString(seed: string) {
-	let s = 0;
-	for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) | 0;
-	s = s & 0x7fffffff;
-	if (s === 0) s = 1;
+function mulberry32(seed: number) {
+	let a = seed >>> 0;
 	return () => {
-		s = (s * 1103515245 + 12345) & 0x7fffffff;
-		return s / 0x7fffffff;
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
 }
 
-function generateDaily(seed: string): Round {
-	const rng = rngFromString(seed);
+function difficultyFor(day: string): { steps: number; diagonals: boolean } {
+	const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
+	return {
+		steps: DAILY_STEPS + Math.floor(dow / 2),
+		diagonals: dow >= 4,
+	};
+}
+
+function generateDaily(seedStr: string, day: string): Round {
+	const seedNum = Number.parseInt(seedStr, 10) >>> 0;
+	const rng = mulberry32(seedNum || 1);
+	const { steps: stepCount, diagonals } = difficultyFor(day);
 	const sx = Math.floor(rng() * GRID);
 	const sy = Math.floor(rng() * GRID);
 	let x = sx;
 	let y = sy;
 	const steps: Dir[] = [];
-	for (let i = 0; i < DAILY_STEPS; i++) {
+	for (let i = 0; i < stepCount; i++) {
 		const opts: Dir[] = [];
 		if (y > 0) opts.push("N");
 		if (y < GRID - 1) opts.push("S");
 		if (x > 0) opts.push("W");
 		if (x < GRID - 1) opts.push("E");
+		if (diagonals) {
+			if (y > 0 && x < GRID - 1) opts.push("NE");
+			if (y < GRID - 1 && x < GRID - 1) opts.push("SE");
+			if (y < GRID - 1 && x > 0) opts.push("SW");
+			if (y > 0 && x > 0) opts.push("NW");
+		}
 		const dir = opts[Math.floor(rng() * opts.length)];
 		steps.push(dir);
-		if (dir === "N") y--;
-		if (dir === "S") y++;
-		if (dir === "E") x++;
-		if (dir === "W") x--;
+		if (dir.includes("N")) y--;
+		if (dir.includes("S")) y++;
+		if (dir.includes("E")) x++;
+		if (dir.includes("W")) x--;
 	}
 	return { start: { x: sx, y: sy }, steps, end: { x, y } };
 }
@@ -82,10 +98,47 @@ function getAuthorId(): string {
 	}
 }
 
+function useAudio() {
+	const ctxRef = useRef<AudioContext | null>(null);
+	const ensure = useCallback(() => {
+		if (!ctxRef.current) {
+			try {
+				const Ctor = (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
+					?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+				if (Ctor) ctxRef.current = new Ctor();
+			} catch {}
+		}
+		return ctxRef.current;
+	}, []);
+	const tone = useCallback((freq: number, dur: number, type: OscillatorType = "sine", gain = 0.07) => {
+		const ctx = ensure();
+		if (!ctx) return;
+		const o = ctx.createOscillator();
+		const g = ctx.createGain();
+		o.type = type;
+		o.frequency.value = freq;
+		g.gain.setValueAtTime(0.0001, ctx.currentTime);
+		g.gain.exponentialRampToValueAtTime(gain, ctx.currentTime + 0.005);
+		g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+		o.connect(g).connect(ctx.destination);
+		o.start();
+		o.stop(ctx.currentTime + dur + 0.02);
+	}, [ensure]);
+	const chord = useCallback((freqs: number[], dur: number) => {
+		freqs.forEach((f) => tone(f, dur, "triangle", 0.05));
+	}, [tone]);
+	return { tone, chord };
+}
+
+const ARROWS: Record<Dir, string> = {
+	N: "↑", S: "↓", E: "→", W: "←", NE: "↗", SE: "↘", SW: "↙", NW: "↖",
+};
+
 export default function CompassRose() {
 	const day = useMemo(() => utcDayString(), []);
 	const seed = useMemo(() => seedForDay(day), [day]);
-	const round = useMemo(() => generateDaily(seed), [seed]);
+	const round = useMemo(() => generateDaily(seed, day), [seed, day]);
+	const { tone, chord } = useAudio();
 
 	const [handle, setHandle] = useState<string>(() => {
 		try {
@@ -101,22 +154,27 @@ export default function CompassRose() {
 	const [solveMs, setSolveMs] = useState<number | null>(null);
 	const [scores, setScores] = useState<ScoreRow[]>([]);
 	const [posted, setPosted] = useState(false);
+	const [replayCount, setReplayCount] = useState(0);
 	const revealEndedAt = useRef<number | null>(null);
+	const [streak, setStreak] = useState<number>(() => {
+		try {
+			return Number.parseInt(localStorage.getItem(STREAK_KEY) ?? "0", 10) || 0;
+		} catch {
+			return 0;
+		}
+	});
 
-	// Animate the step reveal once on mount / when round changes.
-	useEffect(() => {
+	const runReveal = useCallback(() => {
 		setShowing(true);
 		setStepIdx(0);
-		setPicked(null);
 		setMsg("");
-		setSolveMs(null);
-		setPosted(false);
 		revealEndedAt.current = null;
 		const total = round.steps.length;
 		let i = 0;
 		const id = setInterval(() => {
 			i++;
 			setStepIdx(i);
+			tone(440 + i * 30, 0.09, "square", 0.04);
 			if (i >= total) {
 				clearInterval(id);
 				setTimeout(() => {
@@ -125,10 +183,19 @@ export default function CompassRose() {
 				}, 700);
 			}
 		}, 700);
+		return id;
+	}, [round, tone]);
+
+	useEffect(() => {
+		setPicked(null);
+		setSolveMs(null);
+		setPosted(false);
+		setReplayCount(0);
+		const id = runReveal();
 		return () => clearInterval(id);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [round]);
 
-	// Fetch today's leaderboard on mount.
 	useEffect(() => {
 		let cancelled = false;
 		fetch(`/api/compass-rose/scores?day=${encodeURIComponent(day)}`)
@@ -138,7 +205,7 @@ export default function CompassRose() {
 			})
 			.catch(() => {});
 		return () => {
-			cancelled = false;
+			cancelled = true;
 		};
 	}, [day]);
 
@@ -161,6 +228,21 @@ export default function CompassRose() {
 		} catch {}
 	}
 
+	function bumpStreak(correct: boolean) {
+		try {
+			const lastDay = localStorage.getItem(LAST_KEY);
+			let next = streak;
+			if (correct) {
+				if (lastDay !== day) next = streak + 1;
+			} else {
+				next = 0;
+			}
+			localStorage.setItem(STREAK_KEY, String(next));
+			localStorage.setItem(LAST_KEY, day);
+			setStreak(next);
+		} catch {}
+	}
+
 	function pick(x: number, y: number) {
 		if (showing || picked) return;
 		setPicked({ x, y });
@@ -169,18 +251,27 @@ export default function CompassRose() {
 		setSolveMs(elapsed);
 		const correct = x === round.end.x && y === round.end.y;
 		if (correct) {
-			setMsg(`Solved in ${(elapsed / 1000).toFixed(2)}s!`);
+			chord([523.25, 659.25, 783.99], 0.4);
+			setMsg(`Solved in ${(elapsed / 1000).toFixed(2)}s!${replayCount > 0 ? ` (after ${replayCount} replay${replayCount > 1 ? "s" : ""})` : ""}`);
 			postScore(1, elapsed);
+			bumpStreak(true);
 		} else {
+			tone(180, 0.35, "sawtooth", 0.07);
 			setMsg(`Wrong! Target was (${round.end.x},${round.end.y}).`);
 			postScore(0, elapsed);
+			bumpStreak(false);
 		}
+	}
+
+	function replayReveal() {
+		if (picked || showing) return;
+		setReplayCount((n) => n + 1);
+		runReveal();
 	}
 
 	const size = 60;
 	const W = GRID * size;
 	const H = GRID * size;
-	const arrow: Record<Dir, string> = { N: "↑", E: "→", S: "↓", W: "←" };
 
 	return (
 		<div style={{ background: "#1b2230", color: "#eaeefa", padding: 16, fontFamily: "'Lucida Console', monospace" }}>
@@ -188,9 +279,11 @@ export default function CompassRose() {
 			<div style={{ fontSize: 13, opacity: 0.85 }}>
 				Watch the start tile, then track the arrow directions in your head. Click where you ended up. One puzzle per UTC day.
 			</div>
-			<div style={{ display: "flex", gap: 18, marginTop: 6, fontSize: 13 }}>
+			<div style={{ display: "flex", gap: 18, marginTop: 6, fontSize: 13, flexWrap: "wrap" }}>
 				<div>Day: {day}</div>
 				<div>Seed: {seed}</div>
+				<div>Steps: {round.steps.length}</div>
+				<div>Streak: {streak}🔥</div>
 				{solveMs !== null && <div>Time: {(solveMs / 1000).toFixed(2)}s</div>}
 				<div style={{ color: "#ffd07a" }}>{msg}</div>
 			</div>
@@ -226,9 +319,18 @@ export default function CompassRose() {
 						{showing ? `Step ${stepIdx}/${round.steps.length}` : picked ? "Result" : "Click your destination"}
 					</div>
 					<div style={{ fontSize: 56, textAlign: "center", height: 90 }}>
-						{showing && stepIdx > 0 ? arrow[round.steps[stepIdx - 1]] : ""}
+						{showing && stepIdx > 0 ? ARROWS[round.steps[stepIdx - 1]] : ""}
 					</div>
 					<div style={{ opacity: 0.6, fontSize: 12 }}>Memorize, don't follow on the board!</div>
+					{!showing && !picked && (
+						<button
+							type="button"
+							onClick={replayReveal}
+							style={{ marginTop: 10, background: "#2a3a55", color: "#eaeefa", border: 0, padding: "4px 10px", borderRadius: 4, cursor: "pointer" }}
+						>
+							Replay reveal (counts as cheat 👀)
+						</button>
+					)}
 					<div style={{ marginTop: 14 }}>
 						<label style={{ fontSize: 12, opacity: 0.75 }}>
 							Handle (optional, &lt;=20 chars):

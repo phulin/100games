@@ -4,40 +4,70 @@ import { useEffect, useMemo, useRef, useState } from "react";
 // A grid where each cell can hold a sound-emitting object. Each object pans
 // L/R by its X position and gain by Y. Reconstruct a target soundscape by ear.
 
+type Kind = { name: string; freq: number; type: "tone" | "noise" | "blip"; color: string };
 type Obj = { kind: number; x: number; y: number };
 
 const GRID = 8;
-const KINDS = [
-  { name: "wind", freq: 220, type: "noise" },
-  { name: "bell", freq: 880, type: "tone" },
-  { name: "drip", freq: 1200, type: "blip" },
-  { name: "hum", freq: 110, type: "tone" },
-];
 
-function randomTarget(seed: number): Obj[] {
+function mulberry32(seed: number) {
   let s = seed >>> 0;
-  const rand = () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0xffffffff;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+const KIND_NAMES = ["wind", "bell", "drip", "hum", "purr", "click", "chirp", "creak"];
+const TYPES: ("tone" | "noise" | "blip")[] = ["tone", "noise", "blip"];
+const PALETTE = ["#f4c542", "#7df1c5", "#5b8def", "#ff7d8f", "#c896ff", "#ffa872", "#9fe66b", "#ff5cae"];
+
+function genKinds(seed: number): Kind[] {
+  const r = mulberry32(seed ^ 0x10aa);
+  const names = KIND_NAMES.slice();
+  const palette = PALETTE.slice();
+  const kinds: Kind[] = [];
+  for (let i = 0; i < 5; i++) {
+    const name = names.splice(Math.floor(r() * names.length), 1)[0];
+    const type = TYPES[Math.floor(r() * TYPES.length)];
+    const freq = 90 + Math.floor(r() * 1500);
+    const color = palette.splice(Math.floor(r() * palette.length), 1)[0];
+    kinds.push({ name, freq, type, color });
+  }
+  return kinds;
+}
+
+function genTarget(seed: number, kinds: Kind[]): Obj[] {
+  const r = mulberry32(seed ^ 0xface);
+  const count = 3 + Math.floor(r() * 2);
   const out: Obj[] = [];
-  const count = 3;
   const usedKinds = new Set<number>();
   while (out.length < count) {
-    const k = Math.floor(rand() * KINDS.length);
+    const k = Math.floor(r() * kinds.length);
     if (usedKinds.has(k)) continue;
     usedKinds.add(k);
-    out.push({ kind: k, x: Math.floor(rand() * GRID), y: Math.floor(rand() * GRID) });
+    out.push({ kind: k, x: Math.floor(r() * GRID), y: Math.floor(r() * GRID) });
   }
   return out;
 }
 
 export default function Game068_QuietRoom() {
-  const [seed, setSeed] = useState(11);
-  const target = useMemo(() => randomTarget(seed), [seed]);
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1e9));
+  const KINDS = useMemo(() => genKinds(seed), [seed]);
+  const target = useMemo(() => genTarget(seed, KINDS), [seed, KINDS]);
   const [placed, setPlaced] = useState<Obj[]>([]);
   const [selected, setSelected] = useState(0);
-  const [playing, setPlaying] = useState<"target" | "yours" | null>(null);
+  const [playing, setPlaying] = useState<"target" | "yours" | "preview" | null>(null);
+  const [history, setHistory] = useState<{ seed: number; error: number; missing: number }[]>(() => {
+    try {
+      const v = localStorage.getItem("g68_history");
+      return v ? JSON.parse(v) : [];
+    } catch {
+      return [];
+    }
+  });
   const audioRef = useRef<AudioContext | null>(null);
   const stopRef = useRef<() => void>(() => {});
 
@@ -50,6 +80,15 @@ export default function Game068_QuietRoom() {
     stopRef.current();
     const ctx = ensureCtx();
     const nodes: { stop: () => void }[] = [];
+    const wet = ctx.createGain();
+    wet.gain.value = 0.25;
+    const delay = ctx.createDelay();
+    delay.delayTime.value = 0.18;
+    const fb = ctx.createGain();
+    fb.gain.value = 0.35;
+    delay.connect(fb).connect(delay);
+    delay.connect(wet).connect(ctx.destination);
+
     for (const o of objs) {
       const k = KINDS[o.kind];
       const pan = (o.x / (GRID - 1)) * 2 - 1;
@@ -58,7 +97,9 @@ export default function Game068_QuietRoom() {
       panner.pan.value = pan;
       const g = ctx.createGain();
       g.gain.value = gain;
-      panner.connect(g).connect(ctx.destination);
+      panner.connect(g);
+      g.connect(ctx.destination);
+      g.connect(delay);
       if (k.type === "tone") {
         const osc = ctx.createOscillator();
         osc.type = "sine";
@@ -73,11 +114,14 @@ export default function Game068_QuietRoom() {
         const src = ctx.createBufferSource();
         src.buffer = buf;
         src.loop = true;
-        src.connect(panner);
+        const filter = ctx.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.value = k.freq;
+        filter.Q.value = 1.2;
+        src.connect(filter).connect(panner);
         src.start();
         nodes.push({ stop: () => src.stop() });
       } else {
-        // blip — schedule repeating blips
         let alive = true;
         const tick = () => {
           if (!alive) return;
@@ -90,7 +134,7 @@ export default function Game068_QuietRoom() {
           osc.connect(env).connect(panner);
           osc.start();
           osc.stop(ctx.currentTime + 0.2);
-          setTimeout(tick, 600 + Math.random() * 400);
+          setTimeout(tick, 500 + Math.random() * 400);
         };
         tick();
         nodes.push({ stop: () => (alive = false) });
@@ -102,6 +146,9 @@ export default function Game068_QuietRoom() {
           n.stop();
         } catch {}
       }
+      try {
+        wet.disconnect();
+      } catch {}
     };
   }
 
@@ -111,7 +158,7 @@ export default function Game068_QuietRoom() {
     setTimeout(() => {
       stopRef.current();
       setPlaying(null);
-    }, 3000);
+    }, 3500);
   }
 
   function playYours() {
@@ -120,10 +167,23 @@ export default function Game068_QuietRoom() {
     setTimeout(() => {
       stopRef.current();
       setPlaying(null);
-    }, 3000);
+    }, 3500);
   }
 
-  function clickCell(x: number, y: number) {
+  function previewCell(x: number, y: number) {
+    setPlaying("preview");
+    play([{ kind: selected, x, y }]);
+    setTimeout(() => {
+      stopRef.current();
+      setPlaying(null);
+    }, 700);
+  }
+
+  function clickCell(x: number, y: number, ev: React.MouseEvent) {
+    if (ev.shiftKey) {
+      previewCell(x, y);
+      return;
+    }
     setPlaced((p) => {
       const existing = p.findIndex((o) => o.kind === selected);
       if (existing >= 0) {
@@ -136,7 +196,6 @@ export default function Game068_QuietRoom() {
   }
 
   function score() {
-    // For each target obj, find placed obj of same kind, measure distance
     let total = 0;
     let missing = 0;
     for (const t of target) {
@@ -147,16 +206,24 @@ export default function Game068_QuietRoom() {
       }
       total += Math.hypot(t.x - m.x, t.y - m.y);
     }
-    return { error: total.toFixed(1), missing };
+    return { error: total, missing };
   }
 
   const s = score();
+
+  function submit() {
+    const next = [{ seed, error: parseFloat(s.error.toFixed(2)), missing: s.missing }, ...history].slice(0, 10);
+    setHistory(next);
+    try {
+      localStorage.setItem("g68_history", JSON.stringify(next));
+    } catch {}
+  }
 
   useEffect(() => () => stopRef.current(), []);
 
   function newPuzzle() {
     stopRef.current();
-    setSeed((s) => s + 1);
+    setSeed(Math.floor(Math.random() * 1e9));
     setPlaced([]);
   }
 
@@ -164,17 +231,18 @@ export default function Game068_QuietRoom() {
     <div style={{ color: "#eee", fontFamily: "system-ui, sans-serif", maxWidth: 700, margin: "0 auto" }}>
       <h2 style={{ margin: "8px 0" }}>Quiet Room</h2>
       <div style={{ fontSize: 13, opacity: 0.85 }}>
-        Play the target. Each sound corresponds to one hidden grid cell — its X-position pans the audio L/R; Y controls volume. Place objects on the grid to match by ear.
+        Play the target. Each sound's X-pos pans L/R, Y-pos controls volume. Shift-click a cell to preview the selected kind there.
       </div>
-      <div style={{ display: "flex", gap: 6, margin: "8px 0" }}>
+      <div style={{ display: "flex", gap: 6, margin: "8px 0", flexWrap: "wrap" }}>
         <button onClick={playTarget} disabled={playing !== null}>▶ Target</button>
         <button onClick={playYours} disabled={playing !== null}>▶ Yours</button>
+        <button onClick={submit}>Submit</button>
         <button onClick={newPuzzle}>New Puzzle</button>
-        <span style={{ marginLeft: "auto" }}>Distance error: {s.error} | Missing: {s.missing}/{target.length}</span>
+        <span style={{ marginLeft: "auto" }}>Error: {s.error.toFixed(1)} | Missing: {s.missing}/{target.length}</span>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
         {KINDS.map((k, i) => (
-          <button key={i} onClick={() => setSelected(i)} style={{ background: selected === i ? "#345" : "#223" }}>
+          <button key={i} onClick={() => setSelected(i)} style={{ background: selected === i ? "#345" : "#223", borderLeft: `4px solid ${k.color}` }}>
             {k.name}
           </button>
         ))}
@@ -190,21 +258,31 @@ export default function Game068_QuietRoom() {
               height={49}
               fill="#1f2c3a"
               stroke="#0d1320"
-              onClick={() => clickCell(x, y)}
+              onClick={(e) => clickCell(x, y, e)}
               style={{ cursor: "pointer" }}
             />
-          ))
+          )),
         )}
         {placed.map((o, i) => (
           <g key={i} pointerEvents="none">
-            <circle cx={o.x * 50 + 25} cy={o.y * 50 + 25} r={16} fill={["#f4c542", "#7df1c5", "#5b8def", "#ff7d8f"][o.kind]} />
+            <circle cx={o.x * 50 + 25} cy={o.y * 50 + 25} r={16} fill={KINDS[o.kind].color} />
             <text x={o.x * 50 + 25} y={o.y * 50 + 30} textAnchor="middle" fontSize={10} fontWeight={700} fill="#000">
               {KINDS[o.kind].name}
             </text>
           </g>
         ))}
       </svg>
-      <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>X = pan (left→right), Y = louder→quieter</div>
+      <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>X = pan, Y = louder→quieter · Shift-click = preview</div>
+      {history.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: 12 }}>
+          <div style={{ opacity: 0.7 }}>Recent puzzles:</div>
+          {history.map((h, i) => (
+            <div key={i} style={{ opacity: 0.85 }}>
+              #{i + 1} · seed {h.seed} · error {h.error} · missing {h.missing}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
