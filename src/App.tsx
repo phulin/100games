@@ -24,7 +24,7 @@ const getRandomGradient = (index: number) => {
 function Gallery() {
 	return (
 		<div className="gallery-container">
-			<h1 className="gallery-header">100 Games</h1>
+			<h1 className="gallery-header">Patrick's Entries – 100 Games</h1>
 			<div className="gallery-grid">
 				{GAMES.map((game, i) => (
 					<Link
