@@ -1,5 +1,19 @@
 # The 100-App Challenge
 
+## A Brief Discursion on Maximum Productivity
+
+This repo is configured for maximum productivity. We're **agentmaxxing**. We're **skillmaxxing**. We have superpowers — literally, the `using-superpowers` skill is right there in [.agents/skills/](.agents/skills/), and so are 30+ others, from `designing-game-mechanics` to `game-feel-and-juice` to `collision-and-2d-physics`. Our agents have agents. Our skills have skills. Our subagents dispatch parallel subagents that dispatch parallel subagents.
+
+Our stack is better than your stack. Vite. React. TypeScript. Cloudflare Pages. D1. Token-optimized CLI proxying via RTK saves us 60–90% on dev ops, which means we can afford to think 60–90% harder. We don't write code; we orchestrate fleets of specialized agents that write code while we read the diffs at 4x speed.
+
+We're not 10x engineers. We're 100x engineers — one for each app. We ship straight to production because even our tests have tests, and those tests have skills, and those skills have hooks that trigger more tests. Bugs file themselves. Features ship themselves. The CI pipeline is so confident it merges its own PRs and then writes a postmortem about how good the merge was.
+
+You think you're going to build one game today. We're going to build one hundred. In one hundred minutes. Each with its own distinct visual style. Each with collision detection, game feel, audio, juice, onboarding, and procedural content. And then we're going to playtest them. Solo. Honestly.
+
+Anyway, here's the README.
+
+---
+
 This is the template repository for the 100-app challenge, also known as 100 Apps in 100 Minutes.
 
 Fork this repository and use it as a scaffold to build and display your 100 apps.
