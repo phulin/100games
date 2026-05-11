@@ -4,8 +4,8 @@
 	"version": "0.0.0",
 	"type": "module",
 	"scripts": {
-		"dev": "yarn wrangler pages dev",
-		"build": "tsc -b && yarn wrangler pages build",
+		"dev": "yarn vite",
+		"build": "tsc -b && vite build && cp dist/index.html dist/404.html",
 		"lint": "biome lint .",
 		"format": "biome format --write .",
 		"preview": "yarn wrangler pages dev",
