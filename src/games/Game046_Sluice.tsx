@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // The Sluice — route water and logs through gates to mills with target volume + log count.
 
@@ -103,9 +103,16 @@ export default function Game046_Sluice() {
 				}
 			});
 		};
-		propagate(0, 50); // total 50 units/sec from source
+		// 12.5/sec * 8s = 100 total, matches sum of mill targetWater. Old value 50 produced
+		// 400 units, making it impossible to avoid massive overshoot at every mill.
+		propagate(0, 12.5);
 		return { waterByMill, logWeightByMill };
 	}, [gates, mills.length]);
+
+	// Keep latest flow in a ref so the raf effect isn't restarted (and its `last` timestamp
+	// reset, producing dt=0 forever) every time the memoized flow object identity changes.
+	const flowRef = useRef(flow);
+	flowRef.current = flow;
 
 	useEffect(() => {
 		if (!released) return;
@@ -127,25 +134,25 @@ export default function Game046_Sluice() {
 			setMills((ms) =>
 				ms.map((m, i) => ({
 					...m,
-					gotWater: m.gotWater + flow.waterByMill[i] * dt,
+					gotWater: m.gotWater + flowRef.current.waterByMill[i] * dt,
 				}))
 			);
 			raf = requestAnimationFrame(step);
 		};
 		raf = requestAnimationFrame(step);
 		return () => cancelAnimationFrame(raf);
-	}, [released, flow]);
+	}, [released]);
 
 	// Logs released at discrete intervals while flowing
 	useEffect(() => {
 		if (!released) return;
 		const id = window.setInterval(() => {
-			// choose a mill by weight
-			const weights = flow.logWeightByMill;
+			// choose a mill by weight (ref so changing gates doesn't tear down the interval)
+			const weights = flowRef.current.logWeightByMill;
 			const sum = weights.reduce((a, b) => a + b, 0);
 			if (sum === 0) return;
 			let r = Math.random() * sum;
-			let chosen = 0;
+			let chosen = -1;
 			for (let i = 0; i < weights.length; i++) {
 				r -= weights[i];
 				if (r <= 0) {
@@ -153,10 +160,11 @@ export default function Game046_Sluice() {
 					break;
 				}
 			}
+			if (chosen < 0) return; // don't default-credit mill 0 when no weights
 			setMills((ms) => ms.map((m, i) => (i === chosen ? { ...m, gotLogs: m.gotLogs + 1 } : m)));
 		}, 800);
 		return () => clearInterval(id);
-	}, [released, flow]);
+	}, [released]);
 
 	const setGate = (id: number, angle: number) => {
 		if (released) return;

@@ -27,7 +27,11 @@ const EVENT_NAMES = [
 
 function makeEvents(seed: number, count: number): EventDef[] {
 	const rng = mulberry32(seed);
-	const names = EVENT_NAMES.slice().sort(() => rng() - 0.5);
+	const names = EVENT_NAMES.slice();
+	for (let i = names.length - 1; i > 0; i--) {
+		const j = Math.floor(rng() * (i + 1));
+		[names[i], names[j]] = [names[j], names[i]];
+	}
 	const out: EventDef[] = [];
 	for (let i = 0; i < count; i++) {
 		const hour = 6 + rng() * 12;
@@ -84,17 +88,18 @@ export default function Game084_Sundial() {
 	useEffect(() => {
 		if (!autoplay) return;
 		let raf = 0;
-		const start = performance.now();
-		const initial = hour;
+		let last = performance.now();
 		const tick = (t: number) => {
-			const elapsed = (t - start) / 1000;
-			const nh = 6 + ((initial - 6 + elapsed * 2) % 12);
-			setHour(nh);
+			const dt = (t - last) / 1000;
+			last = t;
+			setHour((h) => {
+				const next = h + dt * 2;
+				return next > 18 ? 6 + ((next - 6) % 12) : next;
+			});
 			raf = requestAnimationFrame(tick);
 		};
 		raf = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(raf);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [autoplay]);
 
 	useEffect(() => {

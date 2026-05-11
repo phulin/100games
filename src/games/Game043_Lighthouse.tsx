@@ -120,7 +120,11 @@ export default function Game043_Lighthouse() {
 	const foghornT = useRef(0);
 	const nextId = useRef(1);
 	const audio = useAudio();
+	const audioRef = useRef(audio);
+	audioRef.current = audio;
 	const cfg = DIFF_CFG[diff];
+	const cfgRef = useRef(cfg);
+	cfgRef.current = cfg;
 
 	useEffect(() => {
 		shipsRef.current = ships;
@@ -151,7 +155,7 @@ export default function Game043_Lighthouse() {
 				spawnT.current -= dt;
 				if (spawnT.current <= 0) {
 					const r = rngRef.current;
-					const [lo, hi] = cfg.spawn;
+					const [lo, hi] = cfgRef.current.spawn;
 					spawnT.current = lo + r() * (hi - lo);
 					const angle = r() * Math.PI * 2;
 					const roll = r();
@@ -183,9 +187,9 @@ export default function Game043_Lighthouse() {
 					];
 				}
 				foghornT.current -= dt;
-				if (foghornT.current <= 0 && cfg.fog > 0.3) {
-					foghornT.current = 6 + Math.random() * 4;
-					audio.foghorn();
+				if (foghornT.current <= 0 && cfgRef.current.fog > 0.3) {
+					foghornT.current = 6 + rngRef.current() * 4;
+					audioRef.current.foghorn();
 				}
 
 				let dSaved = 0;
@@ -201,7 +205,7 @@ export default function Game043_Lighthouse() {
 						let dist = s.dist;
 						let warned = s.warned;
 						if (inBeam) {
-							if (!warned) audio.tone(660 + s.value * 100, 0.07, "triangle", 0.06);
+							if (!warned) audioRef.current.tone(660 + s.value * 100, 0.07, "triangle", 0.06);
 							warned = true;
 						}
 						if (warned) {
@@ -216,26 +220,28 @@ export default function Game043_Lighthouse() {
 							if (dist <= ROCK_RADIUS) {
 								dCrashed += 1;
 								dStreakBreak = true;
-								audio.crashSfx();
+								audioRef.current.crashSfx();
 								return { ...s, dist: ROCK_RADIUS, crashed: true };
 							}
 						}
 						return { ...s, dist, warned };
 					})
-					.filter((s) => !(s.saved && s.dist > 360) && !(s.crashed && Math.random() < 0.01));
+					.filter((s) => !(s.saved && s.dist > 360) && !(s.crashed && rngRef.current() < 0.01));
 				shipsRef.current = newShips;
 				setShips(newShips);
 				if (dSaved) {
 					setSaved((v) => v + dSaved);
+					setScore((v) => v + dScore);
+				}
+				if (dCrashed) setCrashed((v) => v + dCrashed);
+				if (dSaved || dStreakBreak) {
 					setStreak((k) => {
+						if (dStreakBreak) return 0;
 						const nk = k + dSaved;
 						setBestStreak((b) => Math.max(b, nk));
 						return nk;
 					});
-					setScore((v) => v + dScore);
 				}
-				if (dCrashed) setCrashed((v) => v + dCrashed);
-				if (dStreakBreak) setStreak(0);
 
 				setTime((tt) => {
 					const nt = tt - dt;
@@ -250,7 +256,7 @@ export default function Game043_Lighthouse() {
 		};
 		raf = requestAnimationFrame(step);
 		return () => cancelAnimationFrame(raf);
-	}, [over, paused, cfg, audio]);
+	}, [over, paused]);
 
 	const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
 		const rect = e.currentTarget.getBoundingClientRect();
@@ -269,13 +275,13 @@ export default function Game043_Lighthouse() {
 		setSaved(0);
 		setCrashed(0);
 		setStreak(0);
-		setBestStreak(0);
 		setScore(0);
 		setTime(90);
 		setOver(false);
 		setPaused(false);
 		lastT.current = 0;
 		spawnT.current = 0;
+		foghornT.current = 4;
 	};
 
 	const shipColor = (s: Ship) =>

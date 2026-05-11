@@ -34,8 +34,14 @@ function makeHeirs(seed: number): Heir[] {
 	const r = rngFrom(seed);
 	return HEIRS.map((name) => {
 		const t: Record<Trait, number> = { kind: 0, greedy: 0, wise: 0, wild: 0, frugal: 0 };
-		// Assign 1-2 dominant traits
-		const shuffled = [...TRAITS].sort(() => r() - 0.5);
+		// Assign 1-2 dominant traits. Use Fisher-Yates: sort() with a non-transitive
+		// comparator produces engine-dependent results, so the "seeded" output wasn't
+		// actually deterministic.
+		const shuffled = [...TRAITS];
+		for (let i = shuffled.length - 1; i > 0; i--) {
+			const j = Math.floor(r() * (i + 1));
+			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+		}
 		t[shuffled[0]] = 2;
 		if (r() < 0.6) t[shuffled[1]] = 1;
 		if (r() < 0.4) t[shuffled[2]] = -1;
@@ -66,8 +72,13 @@ function makeEvents(heirs: Heir[], seed: number): { day: number; text: string }[
 		const n = 4 + Math.floor(r() * 2);
 		for (let i = 0; i < n; i++) {
 			const h = heirs[Math.floor(r() * heirs.length)];
-			// Choose a trait weighted by their actual traits
-			const weights = TRAITS.map((t) => Math.max(0, h.traits[t] + 2));
+			// Only pick traits the heir actually has (positive OR negative). The old code
+			// rolled a baseline-weighted trait then showed ANTI behavior whenever the heir
+			// was neutral on it — slandering them for traits they don't have and making
+			// the puzzle unwinnable in practice.
+			const nonNeutral = TRAITS.filter((t) => h.traits[t] !== 0);
+			if (nonNeutral.length === 0) continue;
+			const weights = nonNeutral.map((t) => Math.abs(h.traits[t]));
 			const sum = weights.reduce((a, b) => a + b, 0);
 			let acc = r() * sum;
 			let chosenIdx = 0;
@@ -78,7 +89,7 @@ function makeEvents(heirs: Heir[], seed: number): { day: number; text: string }[
 					break;
 				}
 			}
-			const trait = TRAITS[chosenIdx];
+			const trait = nonNeutral[chosenIdx];
 			const v = h.traits[trait];
 			const text = v >= 1 ? templates[trait](h.name) : antiTemplates[trait](h.name);
 			events.push({ day, text });

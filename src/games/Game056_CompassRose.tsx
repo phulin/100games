@@ -156,6 +156,8 @@ export default function CompassRose() {
 	const [posted, setPosted] = useState(false);
 	const [replayCount, setReplayCount] = useState(0);
 	const revealEndedAt = useRef<number | null>(null);
+	const revealIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [streak, setStreak] = useState<number>(() => {
 		try {
 			return Number.parseInt(localStorage.getItem(STREAK_KEY) ?? "0", 10) || 0;
@@ -165,6 +167,8 @@ export default function CompassRose() {
 	});
 
 	const runReveal = useCallback(() => {
+		if (revealIntervalRef.current) clearInterval(revealIntervalRef.current);
+		if (revealTimeoutRef.current) clearTimeout(revealTimeoutRef.current);
 		setShowing(true);
 		setStepIdx(0);
 		setMsg("");
@@ -177,12 +181,15 @@ export default function CompassRose() {
 			tone(440 + i * 30, 0.09, "square", 0.04);
 			if (i >= total) {
 				clearInterval(id);
-				setTimeout(() => {
+				revealIntervalRef.current = null;
+				revealTimeoutRef.current = setTimeout(() => {
 					setShowing(false);
 					revealEndedAt.current = performance.now();
+					revealTimeoutRef.current = null;
 				}, 700);
 			}
 		}, 700);
+		revealIntervalRef.current = id;
 		return id;
 	}, [round, tone]);
 
@@ -191,8 +198,11 @@ export default function CompassRose() {
 		setSolveMs(null);
 		setPosted(false);
 		setReplayCount(0);
-		const id = runReveal();
-		return () => clearInterval(id);
+		runReveal();
+		return () => {
+			if (revealIntervalRef.current) clearInterval(revealIntervalRef.current);
+			if (revealTimeoutRef.current) clearTimeout(revealTimeoutRef.current);
+		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [round]);
 
@@ -231,12 +241,8 @@ export default function CompassRose() {
 	function bumpStreak(correct: boolean) {
 		try {
 			const lastDay = localStorage.getItem(LAST_KEY);
-			let next = streak;
-			if (correct) {
-				if (lastDay !== day) next = streak + 1;
-			} else {
-				next = 0;
-			}
+			if (lastDay === day) return;
+			const next = correct ? streak + 1 : 0;
 			localStorage.setItem(STREAK_KEY, String(next));
 			localStorage.setItem(LAST_KEY, day);
 			setStreak(next);

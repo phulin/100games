@@ -171,12 +171,16 @@ export default function Cairn() {
 	stonesRef.current = stones;
 	const windPhaseRef = useRef(0);
 
+	// Deterministic per-(seed, placed). Previously consumed rngRef during
+	// render, which strict mode runs twice — that consumed RNG twice per
+	// stone and silently broke seed determinism.
 	const next = useMemo(() => {
-		const r = rngRef.current;
+		const r = mulberry32((seed >>> 0) ^ (placed * 0x9e3779b1));
 		const w = 50 + r() * 80;
 		const h = 22 + r() * 30;
 		const hue = 20 + r() * 40;
-		return { w, h, hue };
+		const angle = (r() - 0.5) * 0.4;
+		return { w, h, hue, angle };
 	}, [placed, seed]);
 
 	useEffect(() => {
@@ -196,6 +200,11 @@ export default function Cairn() {
 				(Math.sin(wp * 3.1) > 0.85 ? Math.sin(wp * 11) * 40 : 0);
 			setWind(w);
 
+			// Collect side-effects (thud / particle burst) outside the
+			// setStones updater. React 18 strict mode runs updaters twice in
+			// dev — calling other setters / audio from inside would double
+			// every thump and double-spawn particles.
+			const sideEffects: { impact: number; x: number; w: number }[] = [];
 			setStones((prev) => {
 				const ns = prev.map((s) => ({ ...s }));
 				for (const s of ns) {
@@ -213,21 +222,7 @@ export default function Cairn() {
 						s.y -= overlap;
 						const impact = Math.abs(s.vy);
 						if (impact > 80) {
-							thud(Math.min(1, impact / 400));
-							setParticles((ps) => {
-								const add: Particle[] = [];
-								for (let k = 0; k < 8; k++) {
-									add.push({
-										x: s.x + (Math.random() - 0.5) * s.w,
-										y: GROUND_Y,
-										vx: (Math.random() - 0.5) * 80,
-										vy: -Math.random() * 60,
-										life: 0,
-										max: 0.6 + Math.random() * 0.4,
-									});
-								}
-								return [...ps.slice(-40), ...add];
-							});
+							sideEffects.push({ impact, x: s.x, w: s.w });
 						}
 						s.vy *= -0.2;
 						const idx = corners.findIndex((c) => c.y === lowest);
@@ -248,6 +243,10 @@ export default function Cairn() {
 						const a = ns[i];
 						const b = ns[j];
 						if (a.settled) continue;
+						// Only resolve a newer stone against older ones so a
+						// freshly-dropped stone settles on top instead of
+						// fighting bidirectionally with lower stones.
+						if (j > i) continue;
 						if (rectsOverlap(a, b)) {
 							const dy = a.y - b.y;
 							const push = Math.min(5, b.h * 0.5 + a.h * 0.5 - Math.abs(dy));
@@ -261,6 +260,27 @@ export default function Cairn() {
 				}
 				return ns;
 			});
+
+			// Apply collected impact side-effects once per real frame.
+			if (sideEffects.length > 0) {
+				for (const se of sideEffects) thud(Math.min(1, se.impact / 400));
+				setParticles((ps) => {
+					const add: Particle[] = [];
+					for (const se of sideEffects) {
+						for (let k = 0; k < 8; k++) {
+							add.push({
+								x: se.x + (Math.random() - 0.5) * se.w,
+								y: GROUND_Y,
+								vx: (Math.random() - 0.5) * 80,
+								vy: -Math.random() * 60,
+								life: 0,
+								max: 0.6 + Math.random() * 0.4,
+							});
+						}
+					}
+					return [...ps.slice(-40), ...add];
+				});
+			}
 
 			setParticles((ps) =>
 				ps
@@ -280,7 +300,13 @@ export default function Cairn() {
 			);
 			const anyFallen = cur.some((s) => {
 				const corners = getCorners(s);
-				return corners.every((c) => c.x < 0 || c.x > W);
+				// Counts as fallen if the entire stone is past either side
+				// wall OR has dropped beneath the visible canvas. The old
+				// check only handled side-walls.
+				return (
+					corners.every((c) => c.x < 0 || c.x > W) ||
+					corners.every((c) => c.y > H + 20)
+				);
 			});
 			if (anyFallen && status === "playing") {
 				topple();
@@ -324,13 +350,12 @@ export default function Cairn() {
 
 	const handleClick = () => {
 		if (placed >= STONES_PER_RUN || status !== "playing") return;
-		const r = rngRef.current;
 		const stone: Stone = {
 			x: previewX,
 			y: 60,
 			w: next.w,
 			h: next.h,
-			angle: (r() - 0.5) * 0.4,
+			angle: next.angle,
 			vx: 0,
 			vy: 0,
 			va: 0,

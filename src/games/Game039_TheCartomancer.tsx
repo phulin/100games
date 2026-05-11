@@ -147,6 +147,10 @@ export default function TheCartomancer() {
 	const [sortBy, setSortBy] = useState<"votes" | "recent">("votes");
 	const flipTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
 
+	// Run the staggered flip animation only on a new reading (seed change).
+	// Previously depending on `spread` meant calling `muse` to redraw one
+	// card flipped EVERY card back to its back face and re-dealt the whole
+	// spread, throwing away the player's existing reading.
 	useEffect(() => {
 		setFlipped(spread.map(() => false));
 		flipTimeouts.current.forEach((t) => clearTimeout(t));
@@ -166,7 +170,8 @@ export default function TheCartomancer() {
 		return () => {
 			flipTimeouts.current.forEach((t) => clearTimeout(t));
 		};
-	}, [spread]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [seed]);
 
 	const fetchFortunes = async (key: string, mineId: number | null) => {
 		setLoading(true);
@@ -269,7 +274,17 @@ export default function TheCartomancer() {
 			pick = (pick + 1) % CARDS.length;
 			tries++;
 		}
+		// Animate just this card: flip to back, swap, flip to front. The
+		// main flip effect no longer responds to spread changes so we
+		// orchestrate the single-card animation locally here.
+		setFlipped((prev) => prev.map((f, j) => (j === i ? false : f)));
 		setSpread((sp) => sp.map((c, j) => (j === i ? { idx: pick, reversed: r() < 0.35 } : c)));
+		const id = setTimeout(() => {
+			flipSound();
+			chime(330 + i * 60);
+			setFlipped((prev) => prev.map((f, j) => (j === i ? true : f)));
+		}, 350);
+		flipTimeouts.current.push(id);
 	};
 
 	const sorted = useMemo(() => {
@@ -355,8 +370,13 @@ export default function TheCartomancer() {
 				<div style={{ textAlign: "center", fontSize: 12, opacity: 0.7, marginBottom: 10, fontStyle: "italic" }}>
 					Themes:{" "}
 					{spread
-						.map((c) => {
-							const t = CARDS[c.idx].themes[c.idx % CARDS[c.idx].themes.length];
+						.map((c, i) => {
+							// Pick a theme that varies per position so the
+							// same card in different slots can surface a
+							// different nuance rather than always the same
+							// fixed `themes[idx % len]` value.
+							const themes = CARDS[c.idx].themes;
+							const t = themes[(i + (c.reversed ? 1 : 0)) % themes.length];
 							return c.reversed ? `inverted ${t}` : t;
 						})
 						.join(" · ")}

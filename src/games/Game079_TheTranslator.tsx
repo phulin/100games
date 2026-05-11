@@ -362,14 +362,14 @@ export default function Game079_TheTranslator() {
 	const englishLines = lines.map((line) => line.map((w) => w.synonyms[w.chosen]).join(" "));
 
 	const evaluate = () => {
-		const a = englishLines[0];
-		const b = englishLines[englishLines.length - 1];
-		const lastA = a.split(" ").pop()!.toLowerCase();
-		const lastB = b.split(" ").pop()!.toLowerCase();
+		const a = englishLines[0] ?? "";
+		const b = englishLines[englishLines.length - 1] ?? "";
+		const lastA = (a.split(" ").pop() ?? "").toLowerCase();
+		const lastB = (b.split(" ").pop() ?? "").toLowerCase();
 		const rhyme =
-			lastA.slice(-2) === lastB.slice(-2) && lastA !== lastB
+			lastA && lastB && lastA.slice(-2) === lastB.slice(-2) && lastA !== lastB
 				? 50
-				: lastA === lastB
+				: lastA && lastB && lastA === lastB
 					? 20
 					: 0;
 		const meter = englishLines.every(

@@ -99,6 +99,7 @@ export default function MemoryTide() {
 	const [peekedUntil, setPeekedUntil] = useState(0);
 	const [peekUses, setPeekUses] = useState(2);
 	const [nowTick, setNowTick] = useState(0);
+	const levelTransitionRef = useRef(false);
 	const audio = useAudio();
 
 	const [best, setBest] = useState<number>(() => {
@@ -158,7 +159,8 @@ export default function MemoryTide() {
 	}, [flipped, deck, combo, audio]);
 
 	useEffect(() => {
-		if (deck.length > 0 && deck.every((c) => c.matched) && !over) {
+		if (deck.length > 0 && deck.every((c) => c.matched) && !over && !levelTransitionRef.current) {
+			levelTransitionRef.current = true;
 			setScore((s) => s + Math.round(time * 5 + level * 20));
 			const lv = level + 1;
 			setTimeout(() => {
@@ -168,9 +170,11 @@ export default function MemoryTide() {
 				setFlipped([]);
 				setCombo(0);
 				setPeekUses((u) => u + 1);
+				levelTransitionRef.current = false;
 			}, 800);
 		}
-	}, [deck, time, level, over, runSeed]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [deck, level, over, runSeed]);
 
 	useEffect(() => {
 		if (over && score > best) {
@@ -214,6 +218,7 @@ export default function MemoryTide() {
 		setMaxCombo(0);
 		setPeekUses(2);
 		setPeekedUntil(0);
+		levelTransitionRef.current = false;
 	}
 
 	const cols = Math.ceil(Math.sqrt(deck.length * 1.4));

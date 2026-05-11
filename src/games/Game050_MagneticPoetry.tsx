@@ -158,13 +158,18 @@ export default function Game050_MagneticPoetry() {
 		const svg = svgRef.current;
 		if (!svg) return;
 		const rect = svg.getBoundingClientRect();
-		dragOffset.current = {
-			x: e.clientX - rect.left - t.x,
-			y: e.clientY - rect.top - t.y,
-		};
 		draggingId.current = t.id;
-		// Bring to front
-		setTiles((ts) => [...ts.filter((x) => x.id !== t.id), t]);
+		// Bring to front using the CURRENT tile from state, not the closure-captured `t`.
+		// The captured value can be stale after a previous drag, which would snap the
+		// tile back to its old position on the second click.
+		setTiles((ts) => {
+			const current = ts.find((x) => x.id === t.id) ?? t;
+			dragOffset.current = {
+				x: e.clientX - rect.left - current.x,
+				y: e.clientY - rect.top - current.y,
+			};
+			return [...ts.filter((x) => x.id !== t.id), current];
+		});
 	};
 
 	useEffect(() => {
@@ -226,6 +231,11 @@ export default function Game050_MagneticPoetry() {
 			const next = [created, ...poems];
 			setPoems(next);
 			saveLocal(day, next);
+			// Mark own poem as already voted so the user can't self-upvote.
+			const newVoted = new Set(voted);
+			newVoted.add(created.id);
+			setVoted(newVoted);
+			saveVotedSet(newVoted);
 			setStatus("posted");
 		} catch {
 			// Local fallback: synthesize an id so React keys/votes still work
@@ -241,6 +251,10 @@ export default function Game050_MagneticPoetry() {
 			const next = [fallback, ...poems];
 			setPoems(next);
 			saveLocal(day, next);
+			const newVoted = new Set(voted);
+			newVoted.add(fallback.id);
+			setVoted(newVoted);
+			saveVotedSet(newVoted);
 			setStatus("offline — saved locally");
 		}
 	};

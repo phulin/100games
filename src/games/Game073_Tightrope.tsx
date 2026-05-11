@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 export default function Game073_Tightrope() {
 	const [progress, setProgress] = useState(0); // 0..1 across chasm
 	const [angle, setAngle] = useState(0); // tilt in radians
-	const [angVel, setAngVel] = useState(0);
+	const [, setAngVel] = useState(0);
 	const [pole, setPole] = useState(true);
 	const [gust, setGust] = useState(0);
 	const [state, setState] = useState<"play" | "win" | "fall">("play");
@@ -23,6 +23,7 @@ export default function Game073_Tightrope() {
 	const lastTs = useRef<number | null>(null);
 	const gustRef = useRef(0);
 	const startTime = useRef<number>(Date.now());
+	const angVelRef = useRef(0);
 
 	useEffect(() => {
 		const onMove = (e: MouseEvent) => {
@@ -46,29 +47,28 @@ export default function Game073_Tightrope() {
 			gustRef.current *= 0.92;
 			setGust(gustRef.current);
 
-			// physics
+			// physics: compute via ref to avoid stale closure on angVel
 			setAngle((a) => {
-				setAngVel((v) => {
-					// gravity-like instability: angle accelerates outward
-					const inputResponse = pole ? 1.0 : 1.8;
-					const stability = pole ? 0.5 : 0.0;
-					const torque = a * 6.0 - mouseX.current * inputResponse * 8 + gustRef.current * 1.2;
-					const damping = 1.5 + stability;
-					const newV = v + torque * dt - v * damping * dt;
-					return newV;
-				});
-				const newA = a + angVel * dt;
+				const inputResponse = pole ? 1.0 : 1.8;
+				const stability = pole ? 0.5 : 0.0;
+				const v = angVelRef.current;
+				const torque = a * 6.0 - mouseX.current * inputResponse * 8 + gustRef.current * 1.2;
+				const damping = 1.5 + stability;
+				const newV = v + torque * dt - v * damping * dt;
+				angVelRef.current = newV;
+				setAngVel(newV);
+				const newA = a + newV * dt;
 				if (Math.abs(newA) > Math.PI / 2.2) {
 					setState("fall");
+				} else {
+					const speed = 0.07 * (1 - Math.min(0.8, Math.abs(newA) * 1.2));
+					setProgress((p) => {
+						const np = Math.min(1, p + speed * dt);
+						if (np >= 1) setState("win");
+						return np;
+					});
 				}
 				return newA;
-			});
-
-			setProgress((p) => {
-				const speed = 0.07 * (1 - Math.min(0.8, Math.abs(angle) * 1.2));
-				const np = Math.min(1, p + speed * dt);
-				if (np >= 1) setState("win");
-				return np;
 			});
 
 			raf.current = requestAnimationFrame(step);
@@ -78,7 +78,7 @@ export default function Game073_Tightrope() {
 			if (raf.current) cancelAnimationFrame(raf.current);
 			lastTs.current = null;
 		};
-	}, [state, angle, angVel, pole]);
+	}, [state, pole]);
 
 	useEffect(() => {
 		if (state === "win") {
@@ -96,6 +96,7 @@ export default function Game073_Tightrope() {
 		setAngVel(0);
 		setGust(0);
 		gustRef.current = 0;
+		angVelRef.current = 0;
 		setState("play");
 		setTries((t) => t + 1);
 		startTime.current = Date.now();

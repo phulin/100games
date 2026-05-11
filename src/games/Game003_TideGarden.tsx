@@ -109,11 +109,12 @@ export default function Game003_TideGarden() {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [cycle, setCycle] = useState(0);
   const [phase, setPhase] = useState<"plant" | "wave">("plant");
-  const [, setPhaseTime] = useState(0);
+  // BUG FIX: phaseTime was state, causing a render on every RAF frame even
+  // though it was never read. Use a ref instead.
+  const phaseTimeRef = useRef(0);
   const [tideLine, setTideLine] = useState(0.55);
   const [waveProgress, setWaveProgress] = useState(0);
   const [tool, setTool] = useState(0);
-  const [score, setScore] = useState(0);
   const [weather, setWeather] = useState<Weather>("calm");
   const [showHelp, setShowHelp] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -138,53 +139,53 @@ export default function Game003_TideGarden() {
     let last = performance.now();
     let raf = 0;
     let playedSurf = false;
+    phaseTimeRef.current = 0;
     const loop = (t: number) => {
       const dt = (t - last) / 1000;
       last = t;
-      setPhaseTime((pt) => {
-        const np = pt + dt;
-        if (phase === "wave" && np > 0.4 && !playedSurf) {
-          playedSurf = true;
-          noise(0.6, weather === "storm" ? 0.12 : 0.05);
+      const np = phaseTimeRef.current + dt;
+      phaseTimeRef.current = np;
+      if (phase === "wave" && np > 0.4 && !playedSurf) {
+        playedSurf = true;
+        noise(0.6, weather === "storm" ? 0.12 : 0.05);
+      }
+      if (np >= dur) {
+        phaseTimeRef.current = 0;
+        if (phase === "plant") {
+          setPhase("wave");
+          setWaveProgress(0);
+        } else {
+          const tl = stateRef.current.tideLine;
+          const wx = stateRef.current.weather;
+          const stormReach = wx === "storm" ? 0.12 : 0;
+          const droughtMult = wx === "drought" ? 0.5 : 1;
+          setPlants((ps) =>
+            ps
+              .map((p) => {
+                const pNorm = (p.y - 80) / (H - 120);
+                const inSurf = pNorm > tl - 0.1 - stormReach && pNorm < tl + 0.05;
+                const covered = pNorm > tl;
+                const type = PLANT_TYPES[p.type];
+                const opt = type.optimal;
+                const tol = type.tolerance;
+                const fit = Math.max(0, 1 - Math.abs(pNorm - opt) / tol);
+                let g = p.growth;
+                let dead = p.dead;
+                if (covered && fit < 0.4 && wx === "storm") return null as unknown as Plant;
+                if (covered && fit < 0.3) return null as unknown as Plant;
+                if (inSurf || covered) g += fit * 0.35 * droughtMult;
+                else g += fit * 0.05 * droughtMult;
+                if (fit < 0.05) dead = true;
+                return { ...p, growth: Math.min(1, g), dead };
+              })
+              .filter(Boolean) as Plant[],
+          );
+          setPhase("plant");
+          setCycle((c) => c + 1);
         }
-        if (np >= dur) {
-          if (phase === "plant") {
-            setPhase("wave");
-            setWaveProgress(0);
-          } else {
-            const tl = stateRef.current.tideLine;
-            const wx = stateRef.current.weather;
-            const stormReach = wx === "storm" ? 0.12 : 0;
-            const droughtMult = wx === "drought" ? 0.5 : 1;
-            setPlants((ps) =>
-              ps
-                .map((p) => {
-                  const pNorm = (p.y - 80) / (H - 120);
-                  const inSurf = pNorm > tl - 0.1 - stormReach && pNorm < tl + 0.05;
-                  const covered = pNorm > tl;
-                  const type = PLANT_TYPES[p.type];
-                  const opt = type.optimal;
-                  const tol = type.tolerance;
-                  const fit = Math.max(0, 1 - Math.abs(pNorm - opt) / tol);
-                  let g = p.growth;
-                  let dead = p.dead;
-                  if (covered && fit < 0.4 && wx === "storm") return null as unknown as Plant;
-                  if (covered && fit < 0.3) return null as unknown as Plant;
-                  if (inSurf || covered) g += fit * 0.35 * droughtMult;
-                  else g += fit * 0.05 * droughtMult;
-                  if (fit < 0.05) dead = true;
-                  return { ...p, growth: Math.min(1, g), dead };
-                })
-                .filter(Boolean) as Plant[],
-            );
-            setPhase("plant");
-            setCycle((c) => c + 1);
-          }
-          return 0;
-        }
-        if (phase === "wave") setWaveProgress(np / dur);
-        return np;
-      });
+      } else if (phase === "wave") {
+        setWaveProgress(np / dur);
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -246,9 +247,13 @@ export default function Game003_TideGarden() {
       ctx.font = "bold 14px system-ui";
       ctx.fillText(weather === "storm" ? "STORM" : "DROUGHT", 10, 20);
     }
-    const sc = plants.reduce((a, p) => a + (p.dead ? 0 : p.growth), 0);
-    setScore(Math.round(sc * 10));
   }, [plants, tideLine, phase, waveProgress, weather, PLANT_TYPES]);
+
+  // BUG FIX: score was state, set inside the canvas render effect every frame
+  // (the effect re-ran on every waveProgress change). Derive it directly.
+  const score = Math.round(
+    plants.reduce((a, p) => a + (p.dead ? 0 : p.growth), 0) * 10,
+  );
 
   const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (phase !== "plant" || cycle >= 30) return;
@@ -266,10 +271,9 @@ export default function Game003_TideGarden() {
     setPlants([]);
     setCycle(0);
     setPhase("plant");
-    setPhaseTime(0);
+    phaseTimeRef.current = 0;
     setTideLine(0.55);
     setWaveProgress(0);
-    setScore(0);
     setWeather("calm");
     setTool(0);
   };

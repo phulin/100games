@@ -185,10 +185,12 @@ export default function Game044_Cuneiform() {
 	useEffect(() => {
 		const firstNoun = lex.findIndex((e) => e.cls === "noun");
 		const firstVerb = lex.findIndex((e) => e.cls === "verb");
+		const firstMod = lex.findIndex((e) => e.cls === "mod");
 		setKnown(() => {
 			const k: Record<number, boolean> = {};
 			if (firstNoun >= 0) k[firstNoun] = true;
 			if (firstVerb >= 0) k[firstVerb] = true;
+			if (firstMod >= 0) k[firstMod] = true;
 			return k;
 		});
 		setSolved(Array.from({ length: cfg.tablets }, () => false));
@@ -197,12 +199,12 @@ export default function Game044_Cuneiform() {
 		setScore(0);
 	}, [lex, cfg.tablets]);
 
-	const tablet = tablets[active];
+	const tablet = tablets[active] ?? tablets[0];
 
 	const reveal = (wordIdx: number) => {
 		if (known[wordIdx]) return;
-		if (score < cfg.revealCost) {
-			setFeedback(`Reveal costs ${cfg.revealCost} pts — earn more first.`);
+		if (score - cfg.revealCost < -5) {
+			setFeedback(`Score too low to reveal (cost ${cfg.revealCost}). Solve a tablet first.`);
 			audio.fail();
 			return;
 		}

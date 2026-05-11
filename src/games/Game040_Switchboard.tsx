@@ -196,21 +196,27 @@ export default function Switchboard() {
 		return () => clearInterval(interval);
 	}, [phase, level]);
 
+	// Drop expired calls and count misses. Previously setMissed and
+	// errorBuzz lived INSIDE the setCalls updater, which React 18 strict
+	// mode runs twice — that double-counted every miss and double-buzzed.
+	// Also avoid allocating a new array every frame when nothing expired,
+	// which kept forcing re-renders.
 	useEffect(() => {
 		if (phase !== "play") return;
+		let expired = 0;
 		setCalls((cs) => {
+			expired = 0;
 			const survivors: Call[] = [];
-			let expired = 0;
 			for (const c of cs) {
 				if (now > c.deadline) expired++;
 				else survivors.push(c);
 			}
-			if (expired > 0) {
-				setMissed((m) => m + expired);
-				errorBuzz();
-			}
-			return survivors;
+			return expired > 0 ? survivors : cs;
 		});
+		if (expired > 0) {
+			setMissed((m) => m + expired);
+			errorBuzz();
+		}
 	}, [now, phase]);
 
 	useEffect(() => {
@@ -231,26 +237,28 @@ export default function Switchboard() {
 		if (phase !== "play") return;
 		const targetId = selectedCall ?? (calls.length > 0 ? calls[0].id : null);
 		if (targetId == null) return;
-		setCalls((cs) => {
-			const target = cs.find((c) => c.id === targetId);
-			if (!target) return cs;
-			const sub = subscribers.find((s) => s.name === target.name);
-			if (!sub) return cs;
-			if (sub.line === line) {
-				plugClick();
-				setScore((s) => s + 1);
-				setCords((cd) => [...cd, { line, t: performance.now() }]);
-				setTimeout(() => {
-					setCords((cd) => cd.filter((c) => performance.now() - c.t < 600));
-				}, 650);
-				return cs.filter((c) => c.id !== targetId);
-			} else {
-				errorBuzz();
-				setMissed((m) => m + 1);
-				return cs.filter((c) => c.id !== targetId);
-			}
-		});
+		const target = calls.find((c) => c.id === targetId);
+		if (!target) return;
+		const sub = subscribers.find((s) => s.name === target.name);
+		if (!sub) return;
+		// Decide outcome OUTSIDE the setCalls updater. The previous version
+		// called setScore / setMissed / audio cues inside the updater, so
+		// React 18 strict mode double-fired every plug action (the wrong
+		// line counted as two misses, a correct line awarded two points).
+		const correct = sub.line === line;
+		setCalls((cs) => cs.filter((c) => c.id !== targetId));
 		setSelectedCall(null);
+		if (correct) {
+			plugClick();
+			setScore((s) => s + 1);
+			setCords((cd) => [...cd, { line, t: performance.now() }]);
+			setTimeout(() => {
+				setCords((cd) => cd.filter((c) => performance.now() - c.t < 600));
+			}, 650);
+		} else {
+			errorBuzz();
+			setMissed((m) => m + 1);
+		}
 	};
 
 	const reset = () => {

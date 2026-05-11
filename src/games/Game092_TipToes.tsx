@@ -326,33 +326,38 @@ export default function Game092_TipToes() {
 			} else {
 				footstep();
 			}
+			let noiseLost = false;
 			setNoise((n) => {
 				const total = n + dn;
-				if (total >= 100) {
-					setState("lose");
-					noiseBurst(0.6, 200, 0.3);
-				}
+				if (total >= 100) noiseLost = true;
 				return Math.min(100, total);
 			});
+			if (noiseLost) {
+				setState("lose");
+				noiseBurst(0.6, 200, 0.3);
+				setPos({ x: nx, y: ny });
+				setSteps((n) => n + 1);
+				return;
+			}
 			const itemHere = mapRef.current.items.find(
 				(it) => !it.got && it.x === nx && it.y === ny,
 			);
 			if (itemHere) {
 				chime(880);
-				setMap((m) => ({
-					...m,
-					items: m.items.map((it) =>
+				// Sync mapRef immediately so the exit check below sees this pickup.
+				mapRef.current = {
+					...mapRef.current,
+					items: mapRef.current.items.map((it) =>
 						it.x === nx && it.y === ny ? { ...it, got: true } : it,
 					),
-				}));
+				};
+				setMap(mapRef.current);
 			}
 			if (
 				nx === mapRef.current.exit.x &&
 				ny === mapRef.current.exit.y
 			) {
-				const stillMissing = mapRef.current.items.some(
-					(it) => !it.got && !(it.x === nx && it.y === ny),
-				);
+				const stillMissing = mapRef.current.items.some((it) => !it.got);
 				if (!stillMissing) {
 					setState("win");
 					chime(1320);

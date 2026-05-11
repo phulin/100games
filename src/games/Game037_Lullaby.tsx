@@ -125,13 +125,20 @@ export default function Lullaby() {
 			padRef.current.stop();
 			padRef.current = null;
 		}
+		// No cleanup on `calm` changes — that previously tore down the pad
+		// after every render, causing it to flicker on/off instead of fading
+		// in once when calm first crossed 70.
+	}, [calm]);
+
+	useEffect(() => {
+		// Stop the pad cleanly on unmount only.
 		return () => {
 			if (padRef.current) {
 				padRef.current.stop();
 				padRef.current = null;
 			}
 		};
-	}, [calm]);
+	}, []);
 
 	const press = (note: string) => {
 		if (allWon) return;
@@ -154,15 +161,17 @@ export default function Lullaby() {
 				return [...sp, ...add];
 			});
 			setHintDir("same");
-			setMatched((m) => {
-				const nm = m + 1;
-				if (nm >= pattern.length) {
-					setCalm((c) => Math.min(100, c + 25));
-					return 0;
-				}
-				return nm;
-			});
-			setCalm((c) => Math.min(100, c + 5));
+			// Avoid nesting setCalm inside the setMatched updater — strict
+			// mode runs updaters twice, which previously doubled the calm
+			// bonus on sequence completion.
+			const nm = matched + 1;
+			if (nm >= pattern.length) {
+				setMatched(0);
+				setCalm((c) => Math.min(100, c + 25));
+			} else {
+				setMatched(nm);
+				setCalm((c) => Math.min(100, c + 5));
+			}
 		} else {
 			const eFreq = FREQS[expected];
 			const aFreq = FREQS[note];

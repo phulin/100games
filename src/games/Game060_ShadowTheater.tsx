@@ -169,6 +169,7 @@ export default function ShadowTheater() {
 	const [over, setOver] = useState(false);
 	const [matchPct, setMatchPct] = useState(0);
 	const keysRef = useRef<Record<string, boolean>>({});
+	const overRef = useRef(false);
 	const audio = useAudio();
 	const tickedTimeRef = useRef(20);
 	const [best, setBest] = useState<number>(() => {
@@ -184,8 +185,13 @@ export default function ShadowTheater() {
 		setPlayer({ x: 650, y: 320, scale: 1, rot: 0 });
 		setTime(20);
 		setOver(false);
+		overRef.current = false;
 		tickedTimeRef.current = 20;
 	}, [targetState]);
+
+	useEffect(() => {
+		overRef.current = over;
+	}, [over]);
 
 	useEffect(() => {
 		const kd = (e: KeyboardEvent) => {
@@ -208,6 +214,10 @@ export default function ShadowTheater() {
 		const loop = (now: number) => {
 			const dt = Math.min(0.05, (now - last) / 1000);
 			last = now;
+			if (overRef.current) {
+				raf = requestAnimationFrame(loop);
+				return;
+			}
 			const k = keysRef.current;
 			const moveSpeed = 200 * dt;
 			const rotSpeed = 2.4 * dt;
@@ -316,6 +326,11 @@ export default function ShadowTheater() {
 		setRunSeed(`${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
 		setRound(1);
 		setScore(0);
+		setOver(false);
+		overRef.current = false;
+		setTime(20);
+		tickedTimeRef.current = 20;
+		setPlayer({ x: 650, y: 320, scale: 1, rot: 0 });
 	}
 
 	useEffect(() => {

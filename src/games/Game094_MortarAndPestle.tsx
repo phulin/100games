@@ -134,6 +134,12 @@ function generateReactions(rng: () => number, ings: Ing[]): ReactionTable {
 		const k = [a, b].sort().join("+");
 		table[k] = product;
 	}
+	// Guarantee at least one reaction so the game always has a target.
+	if (Object.keys(table).length === 0 && pairs.length > 0) {
+		const [a, b] = pairs[0];
+		const k = [a, b].sort().join("+");
+		table[k] = `${pick(rng, PRODUCT_ADJ)} ${pick(rng, PRODUCT_NOUN)}`;
+	}
 	return table;
 }
 
@@ -305,13 +311,11 @@ export default function Game094_MortarAndPestle() {
 	}
 
 	function addIngredient(id: string) {
-		if (bowl.length >= 2) return;
-		setBowl([...bowl, { kind: "ing", id }]);
+		setBowl((b) => (b.length >= 2 ? b : [...b, { kind: "ing", id }]));
 		setMessage("");
 	}
 	function addProduct(name: string) {
-		if (bowl.length >= 2) return;
-		setBowl([...bowl, { kind: "prod", name }]);
+		setBowl((b) => (b.length >= 2 ? b : [...b, { kind: "prod", name }]));
 		setMessage("");
 	}
 
@@ -333,7 +337,10 @@ export default function Game094_MortarAndPestle() {
 					ding(880);
 					setScore((s) => s + 10);
 					const rng = mulberry32(seed + Object.keys(nd).length);
-					setTarget(pick(rng, productList));
+					const others = productList.filter((p) => p !== target);
+					setTarget(
+						others.length > 0 ? pick(rng, others) : pick(rng, productList),
+					);
 					setMessage(`Produced ${result}! New target.`);
 				} else {
 					ding(660);
@@ -359,7 +366,10 @@ export default function Game094_MortarAndPestle() {
 					ding(1100);
 					setScore((s) => s + 25);
 					const rng = mulberry32(seed + Object.keys(nd).length + 13);
-					setTarget(pick(rng, productList));
+					const others = productList.filter((p) => p !== target);
+					setTarget(
+						others.length > 0 ? pick(rng, others) : pick(rng, productList),
+					);
 					setMessage(`Compounded ${result}! New target.`);
 				} else {
 					ding(880);

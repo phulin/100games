@@ -94,6 +94,9 @@ export default function Game010_BorrowedTime() {
     p.vy = 0;
     timeRef.current = 0;
     setStatus("play");
+    // Point borrow selector at first valid future level so the <select> isn't stale.
+    const firstFuture = LEVELS.findIndex((_, i) => i > levelIdx);
+    if (firstFuture !== -1) setBorrowFrom(firstFuture);
   }, [levelIdx]);
 
   useEffect(() => {
@@ -201,7 +204,15 @@ export default function Game010_BorrowedTime() {
   };
 
   const retry = () => {
-    setBorrowAmt(0);
+    // Refund borrowed seconds back to source level so retry doesn't permanently
+    // consume budget the player can no longer access.
+    if (borrowAmt > 0) {
+      const nb = [...budgets];
+      nb[borrowFrom] += borrowAmt;
+      setBudgets(nb);
+      setDebt((d) => Math.max(0, d - borrowAmt));
+      setBorrowAmt(0);
+    }
     setStatus("play");
     const p = playerRef.current;
     p.x = level.start.x;

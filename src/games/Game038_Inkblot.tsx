@@ -121,6 +121,9 @@ export default function Inkblot() {
 		setRevealT(0);
 	}, [seed]);
 
+	// Reveal animates only on a new seed — toggling rotation/mirror should
+	// not restart the slow drip. Previously the effect depended on all three
+	// and replayed the full reveal on every rotate, blanking the blot.
 	useEffect(() => {
 		let raf = 0;
 		const start = performance.now();
@@ -131,20 +134,18 @@ export default function Inkblot() {
 		};
 		raf = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(raf);
-	}, [seed, mirrored, rotation]);
+	}, [seed]);
 
 	useEffect(() => {
-		if (droneRef.current) {
-			droneRef.current.stop();
-			droneRef.current = null;
-		}
+		// Capture the drone in a local so cleanup only stops the one this
+		// effect created. The previous code stopped droneRef.current both at
+		// the top of the effect AND in cleanup, which under strict mode
+		// could double-stop the same node and orphan the next drone.
 		const d = blotDrone(seed, blobs);
 		droneRef.current = d;
 		return () => {
-			if (droneRef.current) {
-				droneRef.current.stop();
-				droneRef.current = null;
-			}
+			if (d) d.stop();
+			if (droneRef.current === d) droneRef.current = null;
 		};
 	}, [seed, blobs]);
 

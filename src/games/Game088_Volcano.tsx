@@ -122,7 +122,11 @@ export default function Game088_Volcano() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [seed]);
 	const [barriers, setBarriers] = useState(20);
+	const barriersRef = useRef(20);
+	barriersRef.current = barriers;
 	const [tick, setTick] = useState(0);
+	const tickRef = useRef(0);
+	tickRef.current = tick;
 	const [running, setRunning] = useState(false);
 	const [speed, setSpeed] = useState(200);
 	const stateRef = useRef(state);
@@ -141,7 +145,9 @@ export default function Game088_Volcano() {
 			const s = stateRef.current;
 			const t = s.terrain.slice();
 			const a = new Float32Array(s.lavaAmt);
-			a[s.peakIdx] += 1.5;
+			// Eruption emits lava for the first ~80 ticks then stops, so flows
+			// can drain and the "lava cleared" win condition is actually reachable.
+			if (tickRef.current < 80) a[s.peakIdx] += 1.5;
 			const next = new Float32Array(a);
 			for (let y = 0; y < H; y++) {
 				for (let x = 0; x < W; x++) {
@@ -210,23 +216,34 @@ export default function Game088_Volcano() {
 	}, [tick, totalLava, lavaCells]);
 
 	const applyCell = (i: number, mode: "place" | "remove") => {
-		const t = state.terrain.slice();
-		if (mode === "place" && t[i] === "rock") {
-			if (barriers <= 0) return;
+		// Read live values through refs: rapid drag fires many events per render,
+		// and reading `state`/`barriers` from the closure makes each event see the
+		// same stale snapshot, so only the last painted cell sticks.
+		const cur = stateRef.current;
+		if (mode === "place" && cur.terrain[i] === "rock") {
+			if (barriersRef.current <= 0) return;
+			const t = cur.terrain.slice();
 			t[i] = "barrier";
-			setBarriers((b) => b - 1);
-			setState({ ...state, terrain: t });
+			const ns = { ...cur, terrain: t };
+			stateRef.current = ns;
+			barriersRef.current -= 1;
+			setBarriers(barriersRef.current);
+			setState(ns);
 			blip(620, 0.04, "square", 0.06);
-		} else if (mode === "remove" && t[i] === "barrier") {
+		} else if (mode === "remove" && cur.terrain[i] === "barrier") {
+			const t = cur.terrain.slice();
 			t[i] = "rock";
-			setBarriers((b) => b + 1);
-			setState({ ...state, terrain: t });
+			const ns = { ...cur, terrain: t };
+			stateRef.current = ns;
+			barriersRef.current += 1;
+			setBarriers(barriersRef.current);
+			setState(ns);
 			blip(360, 0.04, "square", 0.06);
 		}
 	};
 
 	const onCellDown = (i: number) => {
-		const c = state.terrain[i];
+		const c = stateRef.current.terrain[i];
 		if (c === "barrier") { paintRef.current = "remove"; applyCell(i, "remove"); }
 		else if (c === "rock") { paintRef.current = "place"; applyCell(i, "place"); }
 	};
@@ -244,8 +261,12 @@ export default function Game088_Volcano() {
 	const reset = (s = seed) => {
 		stopRumble();
 		setSeed(s);
-		setState(makeState(s));
+		const ns = makeState(s);
+		stateRef.current = ns;
+		setState(ns);
+		barriersRef.current = 20;
 		setBarriers(20);
+		tickRef.current = 0;
 		setTick(0);
 		setRunning(false);
 	};

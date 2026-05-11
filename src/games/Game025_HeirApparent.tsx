@@ -281,7 +281,19 @@ export default function HeirApparent() {
 	};
 
 	const reset = () => {
-		setSeed(mode === "daily" ? dailySeed() : (Math.random() * 1e9) >>> 0);
+		if (mode === "daily") {
+			// Daily seed is the same all day, so setSeed with the same
+			// value wouldn't trigger the [heirs0] reset effect. Manually
+			// re-initialize so the player can retry today's puzzle.
+			setHeirs(heirs0);
+			setRound(0);
+			setLog([]);
+			setCrowned(null);
+			setFinalTrait(null);
+			setFinalScore(null);
+		} else {
+			setSeed((Math.random() * 1e9) >>> 0);
+		}
 	};
 
 	const switchMode = (m: "daily" | "free") => {

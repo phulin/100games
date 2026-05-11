@@ -38,15 +38,19 @@ export default function Game075_BellRinger() {
 	const audio = useRef<AudioContext | null>(null);
 
 	const expectedBell = rows[rowIdx][pos];
+	const ringRef = useRef<(b: number) => void>(() => {});
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			const key = parseInt(e.key);
-			if (!isNaN(key) && key >= 1 && key <= N) ring(key);
+			if (!isNaN(key) && key >= 1 && key <= N) {
+				e.preventDefault();
+				ringRef.current(key);
+			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	});
+	}, []);
 
 	const ring = (bell: number) => {
 		if (done) return;
@@ -77,6 +81,8 @@ export default function Game075_BellRinger() {
 		setDone(false);
 		setLastRing(null);
 	};
+
+	ringRef.current = ring;
 
 	return (
 		<div

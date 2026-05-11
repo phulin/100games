@@ -124,13 +124,20 @@ export default function Game002_AnagramTower() {
   const startTimeRef = useRef(performance.now());
 
   const baseInterval = 350;
-  const elapsed = (performance.now() - startTimeRef.current) / 1000;
-  const interval = Math.max(150, baseInterval - Math.floor(elapsed / 8) * 20);
+  const nextLetterRef = useRef(nextLetter);
+  nextLetterRef.current = nextLetter;
 
+  // BUG FIX: original computed `elapsed` and `interval` during render and put
+  // both in the effect deps, so the spawn setInterval was torn down + rebuilt
+  // on every render — the tick rarely fired predictably. Use chained setTimeout
+  // with refs so the loop owns its timing.
   useEffect(() => {
     if (gameOver) return;
-    const id = setInterval(() => {
+    let id: ReturnType<typeof setTimeout>;
+    const tick = () => {
       tickRef.current++;
+      const elapsedNow = (performance.now() - startTimeRef.current) / 1000;
+      const spawnEvery = Math.max(2, 3 - Math.floor(elapsedNow / 30));
       setBoard((b) => {
         const nb = b.map((r) => r.slice());
         for (let y = ROWS - 2; y >= 0; y--) {
@@ -141,7 +148,6 @@ export default function Game002_AnagramTower() {
             }
           }
         }
-        const spawnEvery = Math.max(2, 3 - Math.floor(elapsed / 30));
         if (tickRef.current % spawnEvery === 0) {
           const col = Math.floor(rng() * COLS);
           if (nb[0][col]) {
@@ -149,16 +155,20 @@ export default function Game002_AnagramTower() {
             beep(160, 0.4, "sawtooth", 0.15);
             setTimeout(() => beep(90, 0.5, "sawtooth", 0.15), 150);
           } else {
-            nb[0][col] = nextLetter;
+            nb[0][col] = nextLetterRef.current;
             setNextLetter(pickLetter(rng));
             beep(440 + Math.random() * 60, 0.04, "triangle", 0.03);
           }
         }
         return nb;
       });
-    }, interval);
-    return () => clearInterval(id);
-  }, [gameOver, interval, nextLetter, rng, elapsed]);
+      const elapsed2 = (performance.now() - startTimeRef.current) / 1000;
+      const nextInterval = Math.max(150, baseInterval - Math.floor(elapsed2 / 8) * 20);
+      id = setTimeout(tick, nextInterval);
+    };
+    id = setTimeout(tick, baseInterval);
+    return () => clearTimeout(id);
+  }, [gameOver, rng]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -178,8 +188,9 @@ export default function Game002_AnagramTower() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // BUG FIX: include combo so submit() doesn't multiply by a stale combo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameOver, input]);
+  }, [gameOver, input, combo]);
 
   const flashFor = (kind: "good" | "bad") => {
     setFlash(kind);

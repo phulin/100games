@@ -66,19 +66,24 @@ export default function Game071_DriftTrade() {
 			lastTs.current = ts;
 			setT((tt) => tt + dt);
 			if (destIdx != null) {
+				const targetIdx = destIdx;
+				let arrived = false;
 				setPos((p) => {
-					const dx = ports[destIdx].x - p.x;
-					const dy = ports[destIdx].y - p.y;
+					const dx = ports[targetIdx].x - p.x;
+					const dy = ports[targetIdx].y - p.y;
 					const d = Math.hypot(dx, dy);
 					if (d < 3) {
-						setAtPort(destIdx);
-						setDestIdx(null);
-						setLog((l) => [`Arrived at ${ports[destIdx].name}.`, ...l].slice(0, 6));
-						return { x: ports[destIdx].x, y: ports[destIdx].y };
+						arrived = true;
+						return { x: ports[targetIdx].x, y: ports[targetIdx].y };
 					}
 					const v = 60 * dt;
 					return { x: p.x + (dx / d) * v, y: p.y + (dy / d) * v };
 				});
+				if (arrived) {
+					setAtPort(targetIdx);
+					setDestIdx(null);
+					setLog((l) => [`Arrived at ${ports[targetIdx].name}.`, ...l].slice(0, 6));
+				}
 				setFuel((f) => Math.max(0, f - 4 * dt));
 				// storm random
 				if (Math.random() < 0.004) {
@@ -120,7 +125,7 @@ export default function Game071_DriftTrade() {
 	}, [fuel, over]);
 
 	const sailTo = (i: number) => {
-		if (over || destIdx != null || atPort === i) return;
+		if (over || destIdx != null || atPort === i || fuel <= 0) return;
 		setAtPort(null);
 		setDestIdx(i);
 	};

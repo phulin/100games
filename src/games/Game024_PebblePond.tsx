@@ -27,7 +27,7 @@ function hashSeed(s: string): number {
 	return h >>> 0;
 }
 
-type Pebble = { x: number; y: number; t: number };
+type Pebble = { x: number; y: number; t: number; id: number };
 type Pad = { x: number; y: number; n: number; rung: boolean };
 
 const WAVE_SPEED = 90; // px per second
@@ -118,6 +118,10 @@ export default function PebblePond() {
 	const pebblesRef = useRef(pebbles);
 	const padsRef = useRef(pads);
 	const nextRef = useRef(next);
+	// Per-pebble previous wave radius, kept outside React state so it
+	// survives across re-renders and isn't clobbered when setPebbles fires.
+	const lastRRef = useRef<Map<number, number>>(new Map());
+	const pebbleIdRef = useRef(0);
 	pebblesRef.current = pebbles;
 	padsRef.current = pads;
 	nextRef.current = next;
@@ -126,6 +130,7 @@ export default function PebblePond() {
 	useEffect(() => {
 		setPads(initialPads);
 		setPebbles([]);
+		lastRRef.current.clear();
 		setNext(1);
 		setScore(0);
 		setPebsUsed(0);
@@ -216,9 +221,17 @@ export default function PebblePond() {
 			const drift = currentStrength * 15; // px/sec horizontal drift
 			for (const p of pebblesRef.current) {
 				const age = now - p.t;
-				if (age > WAVE_LIFE) continue;
+				if (age > WAVE_LIFE) {
+					lastRRef.current.delete(p.id);
+					continue;
+				}
 				const r = age * WAVE_SPEED;
-				const prevR = Math.max(0, (age - 1 / 60) * WAVE_SPEED);
+				// Track each pebble's previous wave radius from the prior
+				// frame, instead of assuming a fixed 1/60s frame interval.
+				// At low frame rates the wave would otherwise step past a
+				// pad's distance without our crossing test ever firing,
+				// silently missing rings.
+				const prevR = lastRRef.current.get(p.id) ?? 0;
 				// center drifts to the right with the "current"
 				const cx = p.x + drift * age;
 				const cy = p.y;
@@ -237,6 +250,7 @@ export default function PebblePond() {
 						}
 					}
 				}
+				lastRRef.current.set(p.id, r);
 				newPebbles.push(p);
 			}
 			if (scoreDelta !== 0) setScore((s) => s + scoreDelta);
@@ -336,7 +350,8 @@ export default function PebblePond() {
 		const x = e.clientX - rect.left;
 		const y = e.clientY - rect.top;
 		const t = (performance.now() - startRef.current) / 1000;
-		setPebbles((p) => [...p, { x, y, t }]);
+		const id = ++pebbleIdRef.current;
+		setPebbles((p) => [...p, { x, y, t, id }]);
 		setPebsUsed((c) => c + 1);
 		splash();
 	};

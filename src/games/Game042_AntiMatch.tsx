@@ -94,6 +94,7 @@ export default function Game042_AntiMatch() {
 
 	const place = (col: number) => {
 		if (over) return;
+		if (current === undefined) return;
 		const column = grid[col];
 		const firstEmpty = column.findIndex((c) => c === null);
 		if (firstEmpty === -1) {
@@ -162,8 +163,10 @@ export default function Game042_AntiMatch() {
 				newGrid[cc] = padded;
 			}
 		} else {
-			setScore((s) => s + 1 + Math.floor(combo / 5));
-			setCombo((k) => k + 1);
+			setCombo((k) => {
+				setScore((s) => s + 1 + Math.floor(k / 5));
+				return k + 1;
+			});
 			audio.beep(440 + col * 70, 0.06, "triangle", 0.08);
 		}
 		setGrid(newGrid);
@@ -271,7 +274,7 @@ export default function Game042_AntiMatch() {
 				<div>
 					<div style={{ display: "flex", gap: 0, marginBottom: 6, justifyContent: "center" }}>
 						<div style={{ display: "flex", alignItems: "center" }}>
-							{renderToken(current, 40)}
+							{current !== undefined ? renderToken(current, 40) : null}
 						</div>
 						<div style={{ marginLeft: 12, marginTop: 5, opacity: 0.6 }}>
 							{renderToken(next ?? 0, 30)}

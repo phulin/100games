@@ -200,6 +200,7 @@ export default function Game099_MagneticField() {
 			y = e.clientY - rect.top;
 		const i = dipoles.findIndex((d) => Math.hypot(d.x - x, d.y - y) < 24);
 		if (i < 0) return;
+		e.preventDefault();
 		const delta = e.deltaY > 0 ? -0.1 : 0.1;
 		setDipoles((ds) =>
 			ds.map((d, j) =>

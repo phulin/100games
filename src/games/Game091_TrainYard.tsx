@@ -231,18 +231,25 @@ export default function Game091_TrainYard() {
 			from.kind === to.kind &&
 			(from.kind !== "side" ||
 				(to.kind === "side" && from.idx === to.idx))
-		)
+		) {
+			setSelected(null);
 			return;
+		}
 		const { car, yard: y2 } = popFrom(yard, from);
-		if (!car) return;
+		if (!car) {
+			setSelected(null);
+			return;
+		}
 		if (to.kind === "side" && y2.sides[to.idx].length >= cfg.sideCap) {
 			beep(160, 0.1, 0.05);
+			setSelected(null);
 			return;
 		}
 		if (to.kind === "out") {
 			const expected = puzzle.target[y2.out.length];
 			if (!expected || car.id !== expected.id) {
 				beep(160, 0.12, 0.06);
+				setSelected(null);
 				return;
 			}
 		}

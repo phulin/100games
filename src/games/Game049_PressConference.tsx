@@ -87,7 +87,11 @@ export default function Game049_PressConference() {
 	const ask = (id: string) => {
 		if (over) return;
 		const topic = TOPICS.find((t) => t.id === id)!;
-		setTime((t) => Math.max(0, t - 8)); // each question costs time
+		setTime((t) => {
+			const nt = Math.max(0, t - 8); // each question costs time
+			if (nt === 0) setOver(true); // end immediately when ask drains the clock
+			return nt;
+		});
 
 		const reqMet =
 			!topic.requires || topic.requires.every((r) => factsFound.has(r));
@@ -98,6 +102,10 @@ export default function Game049_PressConference() {
 			setFactsFound((f) => {
 				const ns = new Set(f);
 				ns.add(topic.id);
+				// End early once every fact-bearing topic has been uncovered; the player
+				// shouldn't have to wait out a dead clock with nothing left to find.
+				const totalFacts = TOPICS.filter((tp) => tp.fact).length;
+				if (ns.size >= totalFacts) setOver(true);
 				return ns;
 			});
 			if (topic.unlocks) {

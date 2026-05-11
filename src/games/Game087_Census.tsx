@@ -82,6 +82,7 @@ export default function Game087_Census() {
 	const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1e9));
 	const npcs = useMemo(() => makeNPCs(seed), [seed]);
 	const [running, setRunning] = useState(false);
+	const [runId, setRunId] = useState(0);
 	const [time, setTime] = useState(0);
 	const [counts, setCounts] = useState<Counts>(EMPTY_COUNTS);
 	const [submitted, setSubmitted] = useState(false);
@@ -113,7 +114,7 @@ export default function Game087_Census() {
 		};
 		raf = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(raf);
-	}, [running]);
+	}, [running, runId]);
 
 	const displayFor = (npc: NPC, p: number): NPC => {
 		if (!npc.liar || p === 0) return npc;
@@ -159,11 +160,15 @@ export default function Game087_Census() {
 	const score = errFromCounts(counts);
 
 	const start = () => {
+		// Restart while already running: bumping runId forces the RAF effect to
+		// tear down and re-init startRef so time really resets to 0.
 		setSubmitted(false);
 		setTime(0);
 		setCounts(EMPTY_COUNTS);
+		setNotes("");
 		lastPassRef.current = -1;
 		setRunning(true);
+		setRunId((r) => r + 1);
 	};
 
 	const newSeed = () => {

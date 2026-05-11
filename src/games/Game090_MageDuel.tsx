@@ -507,21 +507,23 @@ function MatchPlayback({ match }: { match: PvpMatch }) {
 	useEffect(() => {
 		setStep(0);
 		if (rounds === 0) return;
+		// Keep side effects (sounds) outside the setState updater, since React
+		// StrictMode double-invokes updaters in dev and would emit duplicate sounds.
+		let s = 0;
 		const id = setInterval(() => {
-			setStep((s) => {
-				if (s >= rounds) {
-					clearInterval(id);
-					return s;
-				}
-				const c = cs[s];
-				const d = ds[s];
-				castSound(ELEMENTS[c]);
-				setTimeout(() => castSound(ELEMENTS[d]), 90);
-				const o = beats(c, d);
-				if (o === "a") setTimeout(() => blip(660, 0.12, "triangle", 0.12), 200);
-				else if (o === "b") setTimeout(() => blip(220, 0.12, "sawtooth", 0.12), 200);
-				return s + 1;
-			});
+			if (s >= rounds) {
+				clearInterval(id);
+				return;
+			}
+			const c = cs[s];
+			const d = ds[s];
+			castSound(ELEMENTS[c]);
+			setTimeout(() => castSound(ELEMENTS[d]), 90);
+			const o = beats(c, d);
+			if (o === "a") setTimeout(() => blip(660, 0.12, "triangle", 0.12), 200);
+			else if (o === "b") setTimeout(() => blip(220, 0.12, "sawtooth", 0.12), 200);
+			s += 1;
+			setStep(s);
 		}, 700);
 		return () => clearInterval(id);
 		// eslint-disable-next-line react-hooks/exhaustive-deps

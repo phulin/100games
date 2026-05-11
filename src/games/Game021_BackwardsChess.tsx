@@ -292,6 +292,7 @@ export default function BackwardsChess() {
 	const [msg, setMsg] = useState("Un-play the most recent move first.");
 	const [hintUsed, setHintUsed] = useState(0);
 	const [hintFlash, setHintFlash] = useState<Set<string>>(new Set());
+	const [bonusAwarded, setBonusAwarded] = useState(false);
 
 	useEffect(() => {
 		setBoard(clone(puzzle.final));
@@ -301,10 +302,22 @@ export default function BackwardsChess() {
 		setHintUsed(0);
 		setMsg("Un-play the most recent move first.");
 		setHintFlash(new Set());
+		setBonusAwarded(false);
 	}, [puzzle]);
 
 	const won = tapeIdx >= puzzle.tape.length && puzzle.tape.length > 0;
 	const lost = strikes >= 3 && !won;
+
+	// Auto-award the completion bonus exactly once when the puzzle is
+	// solved. Previously the bonus was only applied if the player clicked
+	// the "Next (random)" button, so solving and then clicking "Daily"
+	// or entering a new seed silently dropped the bonus.
+	useEffect(() => {
+		if (won && !bonusAwarded) {
+			setScore((s) => s + Math.max(0, 20 - hintUsed * 2));
+			setBonusAwarded(true);
+		}
+	}, [won, bonusAwarded, hintUsed]);
 
 	const audioRef = useRef<AudioContext | null>(null);
 	const ensureAudio = () => {
@@ -359,12 +372,20 @@ export default function BackwardsChess() {
 			setSelected(null);
 			return;
 		}
+		// If the second click lands on another piece, treat it as
+		// reselecting that piece rather than counting it as a wrong
+		// answer. Origin squares of past moves are always empty, so a
+		// non-empty square can never be a valid un-play target.
+		if (board[r][c] !== null) {
+			setSelected([r, c]);
+			beep(660, 0.05, "triangle", 0.08);
+			return;
+		}
 		const isCorrect =
 			next.to[0] === sr &&
 			next.to[1] === sc &&
 			next.from[0] === r &&
-			next.from[1] === c &&
-			board[r][c] === null;
+			next.from[1] === c;
 		if (!isCorrect) {
 			setStrikes((s) => s + 1);
 			setMsg(`No — that's not the last move. (strike ${strikes + 1}/3)`);
@@ -413,7 +434,10 @@ export default function BackwardsChess() {
 		setBoard(nb);
 		setTapeIdx(tapeIdx - 1);
 		setMsg("Stepped one move forward (undid your last un-play).");
-		setScore((s) => Math.max(0, s - 2));
+		// Refund the +10 awarded for un-playing this move and charge a
+		// small penalty. Otherwise un-play / undo / re-un-play cycles
+		// could be repeated indefinitely for free score.
+		setScore((s) => Math.max(0, s - 12));
 	};
 
 	const newDaily = () => setSeed(dailySeed());
@@ -566,11 +590,7 @@ export default function BackwardsChess() {
 					>
 						<button
 							type="button"
-							onClick={() => {
-								if (won)
-									setScore((s) => s + Math.max(0, 20 - hintUsed * 2));
-								newRandom();
-							}}
+							onClick={newRandom}
 							style={btn("primary")}
 						>
 							Next (random)

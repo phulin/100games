@@ -235,7 +235,10 @@ export default function Game045_StaticSymphony() {
 					<input
 						type="number"
 						value={bpm}
-						onChange={(e) => setBpm(parseInt(e.target.value || "120", 10))}
+						onChange={(e) => {
+							const n = parseInt(e.target.value, 10);
+							if (Number.isFinite(n) && n >= 20 && n <= 400) setBpm(n);
+						}}
 						style={{ width: 50 }}
 					/>
 				</label>

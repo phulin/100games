@@ -263,16 +263,31 @@ export default function Game089_Calligraphy() {
 		if (ptsArr.length < 3 || strokeIdx >= char.strokes.length) return;
 		const target = char.strokes[strokeIdx];
 		const targetPts = strokeSamples(target).map((p) => ({ x: p.x * CANVAS_SIZE, y: p.y * CANVAS_SIZE }));
-		let acc = 0;
+		// Symmetric (Hausdorff-style) average distance — measure both user→target
+		// *and* target→user. The original one-sided metric let a player score
+		// "perfect accuracy" by drawing a tiny scribble near any one point of the
+		// target stroke without actually covering it.
+		let accUT = 0;
 		for (const p of ptsArr) {
 			let m = Infinity;
 			for (const tp of targetPts) {
 				const d = (p.x - tp.x) ** 2 + (p.y - tp.y) ** 2;
 				if (d < m) m = d;
 			}
-			acc += Math.sqrt(m);
+			accUT += Math.sqrt(m);
 		}
-		acc /= ptsArr.length;
+		accUT /= ptsArr.length;
+		let accTU = 0;
+		for (const tp of targetPts) {
+			let m = Infinity;
+			for (const p of ptsArr) {
+				const d = (p.x - tp.x) ** 2 + (p.y - tp.y) ** 2;
+				if (d < m) m = d;
+			}
+			accTU += Math.sqrt(m);
+		}
+		accTU /= targetPts.length;
+		const acc = (accUT + accTU) / 2;
 		let smooth = 0;
 		for (let i = 1; i < ptsArr.length - 1; i++) {
 			const a = ptsArr[i - 1];

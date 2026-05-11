@@ -94,15 +94,22 @@ export default function Game072_ShardGarden() {
 
 	const onClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
 		const rect = e.currentTarget.getBoundingClientRect();
-		const x = e.clientX - rect.left - CX;
-		const y = e.clientY - rect.top - CX;
-		// place into wedge 0 by rotating clicked point
-		const ang = Math.atan2(y, x);
+		// canvas is logical SIZE but displayed at a smaller CSS size — scale back
+		const sx = SIZE / rect.width;
+		const sy = SIZE / rect.height;
+		const x = (e.clientX - rect.left) * sx - CX;
+		const y = (e.clientY - rect.top) * sy - CX;
 		const r = Math.hypot(x, y);
-		const wedgeAng = ((ang % ((Math.PI * 2) / SECTORS)) + (Math.PI * 2) / SECTORS) %
-			((Math.PI * 2) / SECTORS);
-		const lx = Math.cos(wedgeAng) * r;
-		const ly = Math.sin(wedgeAng) * r;
+		if (r > CX) return; // outside kaleidoscope circle
+		const wedgeSize = (Math.PI * 2) / SECTORS;
+		let ang = Math.atan2(y, x);
+		if (ang < 0) ang += Math.PI * 2;
+		const wedgeIdx = Math.floor(ang / wedgeSize);
+		let local = ang - wedgeIdx * wedgeSize;
+		// odd wedges are mirrored (scale(1,-1)) in renderToCanvas — invert local angle
+		if (wedgeIdx % 2 === 1) local = wedgeSize - local;
+		const lx = Math.cos(local) * r;
+		const ly = Math.sin(local) * r;
 		setShards((s) => [...s, { x: lx, y: ly, r: size, color }]);
 	};
 

@@ -106,8 +106,15 @@ function runCode(src: string): {
 		if (steps > 5000) return { output, error: "too many steps", steps };
 		const parts = ln.split(/\s+/);
 		const [op, x, y] = parts;
+		const yAsNum = y === undefined ? NaN : Number(y);
 		const ynum =
-			y === undefined ? NaN : Number.isNaN(Number(y)) ? env[y] : Number(y);
+			y === undefined
+				? NaN
+				: !Number.isNaN(yAsNum)
+					? yAsNum
+					: y in env
+						? env[y]
+						: NaN;
 		if (op === "set") {
 			if (Number.isNaN(ynum)) return { output, error: `bad: ${ln}`, steps };
 			env[x] = ynum;

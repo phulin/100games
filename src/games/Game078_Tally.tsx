@@ -180,8 +180,8 @@ export default function Game078_Tally() {
 	};
 
 	const submit = () => {
-		const g = parseInt(guess);
-		if (isNaN(g)) return;
+		const g = parseInt(guess, 10);
+		if (isNaN(g) || guess.trim() === "" || g < 0) return;
 		const err = Math.abs(g - targetCount) / Math.max(1, targetCount);
 		const good = err < 0.15;
 		if (good) {
@@ -207,6 +207,8 @@ export default function Game078_Tally() {
 		setLevel(1);
 		setStreak(0);
 		setHistory([]);
+		setGuess("");
+		setRound(makeRound((Math.random() * 1e9) | 0, 1));
 		setPhase("ready");
 	};
 

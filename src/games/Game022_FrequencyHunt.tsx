@@ -321,10 +321,19 @@ export default function FrequencyHunt() {
 	}, [freq, puzzle]);
 
 	const tunedStation = useMemo(() => {
+		// Pick the *closest* station within tolerance, not whichever one
+		// happens to come first in array order. Without this, tuning
+		// between two nearby stations could lock onto the wrong clue.
+		let best: Station | null = null;
+		let bestDist = 0.25;
 		for (const s of puzzle.stations) {
-			if (Math.abs(s.freq - freq) < 0.25) return s;
+			const d = Math.abs(s.freq - freq);
+			if (d < bestDist) {
+				bestDist = d;
+				best = s;
+			}
 		}
-		return null;
+		return best;
 	}, [freq, puzzle]);
 
 	useEffect(() => {
@@ -337,6 +346,10 @@ export default function FrequencyHunt() {
 
 	const submitGuess = () => {
 		ensureAudio();
+		// Once the puzzle is solved, ignore further submissions. Without
+		// this guard, clicking Answer repeatedly after winning would keep
+		// awarding `gained` points each time.
+		if (result === "win") return;
 		if (guess.trim().toLowerCase() === puzzle.answer) {
 			setResult("win");
 			const gained = 50 + found.size * 10;

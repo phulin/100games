@@ -11,6 +11,7 @@ type Phase = "intro" | "listen" | "mimic" | "swapListen" | "spot" | "result";
 
 export default function Game008_MimicBird() {
   const acRef = useRef<AudioContext | null>(null);
+  const timeoutsRef = useRef<number[]>([]);
   const [phrase, setPhrase] = useState<string[]>([]);
   const [phase, setPhase] = useState<Phase>("intro");
   const [userPhrase, setUserPhrase] = useState<string[]>([]);
@@ -47,15 +48,30 @@ export default function Game008_MimicBird() {
     for (let i = 0; i < seq.length; i++) tone(seq[i], i * 0.45);
   };
 
+  const clearTimeouts = () => {
+    for (const id of timeoutsRef.current) clearTimeout(id);
+    timeoutsRef.current = [];
+  };
+  const schedule = (fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timeoutsRef.current = timeoutsRef.current.filter((x) => x !== id);
+      fn();
+    }, ms);
+    timeoutsRef.current.push(id);
+  };
+
+  useEffect(() => () => clearTimeouts(), []);
+
   const startRound = () => {
+    clearTimeouts();
     const p = Array.from({ length: 4 }, () => NOTES[Math.floor(Math.random() * NOTES.length)]);
     setPhrase(p);
     setUserPhrase([]);
     setSwappedIdx(-1);
     setMsg("");
     setPhase("listen");
-    setTimeout(() => playSeq(p), 200);
-    setTimeout(() => setPhase("mimic"), 200 + p.length * 450 + 100);
+    schedule(() => playSeq(p), 200);
+    schedule(() => setPhase("mimic"), 200 + p.length * 450 + 100);
   };
 
   useEffect(() => {
@@ -64,6 +80,8 @@ export default function Game008_MimicBird() {
 
   const handleMimic = (n: string) => {
     if (phase !== "mimic") return;
+    // Guard against rapid double-clicks that would exceed phrase length.
+    if (userPhrase.length >= phrase.length) return;
     tone(n);
     const next = [...userPhrase, n];
     setUserPhrase(next);
@@ -80,8 +98,8 @@ export default function Game008_MimicBird() {
       setSwappedIdx(idx);
       setMsg(`You matched ${matches}/4 of the bird's phrase.`);
       setPhase("swapListen");
-      setTimeout(() => playSeq(swapped), 600);
-      setTimeout(() => setPhase("spot"), 600 + swapped.length * 450 + 100);
+      schedule(() => playSeq(swapped), 600);
+      schedule(() => setPhase("spot"), 600 + swapped.length * 450 + 100);
     }
   };
 

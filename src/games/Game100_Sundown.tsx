@@ -380,7 +380,9 @@ export default function Game100_Sundown() {
 			result.offset_ms === 0 ? "" : result.offset_ms > 0 ? "+" : "−";
 		const abs = Math.abs(result.offset_ms);
 		const pctTxt =
-			authorInfo?.percentile != null ? ` • top ${100 - authorInfo.percentile + 1}%` : "";
+			authorInfo?.percentile != null
+				? ` • top ${Math.max(1, 100 - authorInfo.percentile)}%`
+				: "";
 		const streakTxt =
 			authorInfo && authorInfo.current_streak > 1
 				? ` • ${authorInfo.current_streak}-day streak`
@@ -592,10 +594,22 @@ export default function Game100_Sundown() {
 										: `≥${center - histogram.bucket_width_ms / 2}`
 									: `${center >= 0 ? "+" : ""}${center}`;
 								const width = Math.round((c / maxBucket) * 120);
-								const youHere =
-									result &&
-									Math.abs(result.offset_ms) < 60000 &&
-									Math.round(result.offset_ms / 100) + 5 === i;
+								// Find the bucket whose center is closest to the player's
+								// offset, rather than assuming a fixed 100ms / 11-bucket layout.
+								let closestIdx = -1;
+								if (result && Math.abs(result.offset_ms) < 60000) {
+									let bestDiff = Infinity;
+									for (let bi = 0; bi < histogram.centers_ms.length; bi++) {
+										const diff = Math.abs(
+											histogram.centers_ms[bi] - result.offset_ms,
+										);
+										if (diff < bestDiff) {
+											bestDiff = diff;
+											closestIdx = bi;
+										}
+									}
+								}
+								const youHere = closestIdx === i;
 								return (
 									<div
 										key={i}

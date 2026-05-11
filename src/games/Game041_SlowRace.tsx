@@ -157,7 +157,14 @@ export default function Game041_SlowRace() {
 	const velRef = useRef(0.4);
 	const topVRef = useRef(0);
 	const audio = useEngineAudio();
+	const audioRef = useRef(audio);
+	audioRef.current = audio;
 	const cfg = DIFFS[diff];
+	const cfgRef = useRef(cfg);
+	cfgRef.current = cfg;
+	const diffRef = useRef(diff);
+	diffRef.current = diff;
+	const timeRef = useRef(0);
 
 	useEffect(() => {
 		holdingRef.current = holding;
@@ -165,23 +172,27 @@ export default function Game041_SlowRace() {
 
 	useEffect(() => {
 		let raf = 0;
+		let stopped = false;
 		const step = (t: number) => {
+			if (stopped) return;
 			if (!lastT.current) lastT.current = t;
 			const dt = Math.min(0.05, (t - lastT.current) / 1000);
 			lastT.current = t;
 			if (!done && !crashed) {
+				const cfgL = cfgRef.current;
+				const audioL = audioRef.current;
 				const idx = Math.min(track.length - 1, Math.floor(posRef.current));
 				const seg = track[idx];
-				let accel = -seg.slope * cfg.slope;
+				let accel = -seg.slope * cfgL.slope;
 				accel += seg.bump * 0.4;
 				if (holdingRef.current) accel -= 0.45;
-				accel += cfg.idle;
+				accel += cfgL.idle;
 				let v = velRef.current + accel * dt;
-				if (v < cfg.idle + 0.01) v = cfg.idle + 0.01;
-				if (v > cfg.crashV) {
+				if (v < cfgL.idle + 0.01) v = cfgL.idle + 0.01;
+				if (v > cfgL.crashV) {
 					setCrashed(true);
-					audio.crashSfx();
-					audio.stop();
+					audioL.crashSfx();
+					audioL.stop();
 					return;
 				}
 				velRef.current = v;
@@ -190,19 +201,21 @@ export default function Game041_SlowRace() {
 					setTopV(v);
 				}
 				posRef.current += v * dt * 2;
+				timeRef.current += dt;
 				setVel(v);
 				setPos(posRef.current);
-				setTime((tt) => tt + dt);
-				audio.setEngine(v / cfg.crashV, holdingRef.current);
+				setTime(timeRef.current);
+				audioL.setEngine(v / cfgL.crashV, holdingRef.current);
 				if (posRef.current >= track.length - 1) {
 					setDone(true);
-					audio.finishSfx();
-					audio.stop();
+					audioL.finishSfx();
+					audioL.stop();
+					const newTime = timeRef.current;
+					const d = diffRef.current;
 					setBest((b) => {
-						const cur = b[diff];
-						const newTime = time + dt;
+						const cur = b[d];
 						if (cur == null || newTime > cur) {
-							const nb = { ...b, [diff]: newTime };
+							const nb = { ...b, [d]: newTime };
 							localStorage.setItem("slowrace_best_v2", JSON.stringify(nb));
 							return nb;
 						}
@@ -214,8 +227,11 @@ export default function Game041_SlowRace() {
 			raf = requestAnimationFrame(step);
 		};
 		raf = requestAnimationFrame(step);
-		return () => cancelAnimationFrame(raf);
-	}, [track, done, crashed, time, diff, audio, cfg]);
+		return () => {
+			stopped = true;
+			cancelAnimationFrame(raf);
+		};
+	}, [track, done, crashed]);
 
 	const reset = (opts?: { seed?: number; diff?: Difficulty }) => {
 		const ns = opts?.seed ?? seed + 1;
@@ -231,6 +247,7 @@ export default function Game041_SlowRace() {
 		setTopV(0);
 		lastT.current = 0;
 		setTime(0);
+		timeRef.current = 0;
 		setDone(false);
 		setCrashed(false);
 	};

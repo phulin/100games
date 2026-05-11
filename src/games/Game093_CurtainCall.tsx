@@ -214,7 +214,15 @@ export default function Game093_CurtainCall() {
 	const [missed, setMissed] = useState<Set<number>>(new Set());
 	const startRef = useRef<number | null>(null);
 	const rafRef = useRef<number | null>(null);
-	const lastBeatRef = useRef(0);
+	const lastBeatRef = useRef(-1);
+	const hitsRef = useRef(hits);
+	hitsRef.current = hits;
+	const missedRef = useRef(missed);
+	missedRef.current = missed;
+	const tRef = useRef(t);
+	tRef.current = t;
+	const playingRef = useRef(playing);
+	playingRef.current = playing;
 
 	useEffect(() => {
 		setT(0);
@@ -235,30 +243,40 @@ export default function Game093_CurtainCall() {
 				lastBeatRef.current = beat;
 				tickSnd(beat % 4 === 0);
 			}
+			const curHits = hitsRef.current;
+			const curMissed = missedRef.current;
+			const newlyMissed: number[] = [];
 			script.forEach((ln, i) => {
 				if (ln.actor !== "YOU") return;
-				if (cur > ln.t + WINDOW && !(i in hits) && !missed.has(i)) {
-					setMissed((m) => new Set(m).add(i));
+				if (cur > ln.t + WINDOW && !(i in curHits) && !curMissed.has(i)) {
+					newlyMissed.push(i);
 				}
 			});
+			if (newlyMissed.length) {
+				setMissed((m) => {
+					const n = new Set(m);
+					for (const i of newlyMissed) n.add(i);
+					return n;
+				});
+			}
 			if (cur < totalDur) rafRef.current = requestAnimationFrame(loop);
 			else {
 				setPlaying(false);
 				const yourCount = script.filter((l) => l.actor === "YOU").length;
-				if (Object.keys(hits).length >= yourCount * 0.6) applaud();
+				if (Object.keys(hitsRef.current).length >= yourCount * 0.6) applaud();
 			}
 		}
 		rafRef.current = requestAnimationFrame(loop);
 		return () => {
 			if (rafRef.current) cancelAnimationFrame(rafRef.current);
 		};
-	}, [playing, hits, missed, script, totalDur]);
+	}, [playing, script, totalDur]);
 
 	useEffect(() => {
 		function onKey(e: KeyboardEvent) {
 			if (e.code !== "Space") return;
 			e.preventDefault();
-			if (!playing) {
+			if (!playingRef.current) {
 				setPlaying(true);
 				startRef.current = null;
 				lastBeatRef.current = -1;
@@ -267,12 +285,15 @@ export default function Game093_CurtainCall() {
 				setMissed(new Set());
 				return;
 			}
+			const curT = tRef.current;
+			const curHits = hitsRef.current;
+			const curMissed = missedRef.current;
 			let bestIdx = -1;
 			let bestErr = Infinity;
 			script.forEach((ln, i) => {
 				if (ln.actor !== "YOU") return;
-				if (i in hits || missed.has(i)) return;
-				const err = Math.abs(ln.t - t);
+				if (i in curHits || curMissed.has(i)) return;
+				const err = Math.abs(ln.t - curT);
 				if (err < bestErr) {
 					bestErr = err;
 					bestIdx = i;
@@ -288,7 +309,7 @@ export default function Game093_CurtainCall() {
 		}
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [playing, t, hits, missed, script]);
+	}, [script]);
 
 	const totalYour = script.filter((l) => l.actor === "YOU").length;
 	const hitCount = Object.keys(hits).length;

@@ -178,9 +178,9 @@ export default function Game082_Mosaic() {
 	};
 	const erase = (i: number) => {
 		if (board[i] === null) return;
+		pushHistory(board);
 		const b = board.slice();
 		b[i] = null;
-		pushHistory(board);
 		setBoard(b);
 		setBudget(budget + 1);
 	};

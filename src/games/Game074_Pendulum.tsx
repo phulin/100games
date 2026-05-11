@@ -25,6 +25,8 @@ export default function Game074_Pendulum() {
 	const audioRef = useRef<AudioContext | null>(null);
 	const raf = useRef<number | null>(null);
 	const last = useRef<number | null>(null);
+	const thetaRef = useRef(0.05);
+	const omegaRef = useRef(0);
 
 	useEffect(() => {
 		const step = (ts: number) => {
@@ -33,29 +35,32 @@ export default function Game074_Pendulum() {
 			last.current = ts;
 			setTime((t) => t + dt);
 
-			setOmega((w) => {
-				setTheta((th) => {
-					const newW = w - (9.8 / LEN) * Math.sin(th) * 60 * dt - 0.2 * w * dt;
-					const newT = th + newW * dt;
-					// check bell rings
-					setBells((bs) => {
-						let changed = false;
-						const next = bs.map((b) => {
-							if (b.rung) return b;
-							// ring if we cross or pass this angle
-							if (Math.abs(newT - b.angle) < 0.04 && Math.abs(newW) > 0.5) {
-								changed = true;
-								playTone(audioRef, b.pitch);
-								setScore((s) => s + 1);
-								return { ...b, rung: true };
-							}
-							return b;
-						});
-						return changed ? next : bs;
-					});
-					return newT;
+			// integrate via refs to avoid stale closure on theta/omega
+			const w = omegaRef.current;
+			const th = thetaRef.current;
+			const newW = w - (9.8 / LEN) * Math.sin(th) * 60 * dt - 0.2 * w * dt;
+			const newT = th + newW * dt;
+			const prevT = th;
+			omegaRef.current = newW;
+			thetaRef.current = newT;
+			setOmega(newW);
+			setTheta(newT);
+			// swept bell ring detection (avoid tunneling at high omega)
+			setBells((bs) => {
+				let changed = false;
+				const lo = Math.min(prevT, newT);
+				const hi = Math.max(prevT, newT);
+				const next = bs.map((b) => {
+					if (b.rung) return b;
+					if (b.angle >= lo - 0.02 && b.angle <= hi + 0.02 && Math.abs(newW) > 0.5) {
+						changed = true;
+						playTone(audioRef, b.pitch);
+						setScore((s) => s + 1);
+						return { ...b, rung: true };
+					}
+					return b;
 				});
-				return w - (9.8 / LEN) * Math.sin(theta) * 60 * dt - 0.2 * w * dt;
+				return changed ? next : bs;
 			});
 
 			raf.current = requestAnimationFrame(step);
@@ -65,7 +70,7 @@ export default function Game074_Pendulum() {
 			if (raf.current) cancelAnimationFrame(raf.current);
 			last.current = null;
 		};
-	}, [theta]);
+	}, []);
 
 	useEffect(() => {
 		if (score >= target && !over) setOver(true);
@@ -73,16 +78,29 @@ export default function Game074_Pendulum() {
 
 	const pushLeft = () => {
 		// add energy if swinging left (theta decreasing, omega < 0) — gives boost in current direction
+		omegaRef.current -= 0.5;
 		setOmega((w) => w - 0.5);
 	};
 	const pushRight = () => {
+		omegaRef.current += 0.5;
 		setOmega((w) => w + 0.5);
 	};
+
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") pushLeft();
+			else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") pushRight();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
 
 	const bobX = PIVOT.x + Math.sin(theta) * LEN;
 	const bobY = PIVOT.y + Math.cos(theta) * LEN;
 
 	const reset = () => {
+		thetaRef.current = 0.05;
+		omegaRef.current = 0;
 		setTheta(0.05);
 		setOmega(0);
 		setBells(makeBells());

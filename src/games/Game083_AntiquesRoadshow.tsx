@@ -120,6 +120,7 @@ export default function Game083_AntiquesRoadshow() {
 		setStreakInBand(0);
 		setHistory([]);
 		setReveal(false);
+		setBids(new Array(ITEMS_PER_ROUND).fill(""));
 	};
 	const newSeed = () => { setSeed(Math.floor(Math.random() * 1e9)); reset(); };
 	const daily = () => { setSeed(dailySeed()); reset(); };

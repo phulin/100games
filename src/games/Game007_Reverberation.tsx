@@ -68,7 +68,14 @@ export default function Game007_Reverberation() {
 
   const addPeg = (step: number) => {
     setPegs((p) => {
-      if (p.find((x) => x.step === step && x.pitch === pitch)) {
+      const existing = p.find((x) => x.step === step && x.pitch === pitch);
+      if (existing) {
+        // If echo differs from current slider, update the echo; otherwise toggle off.
+        if (existing.echoDelay !== echo) {
+          return p.map((x) =>
+            x.step === step && x.pitch === pitch ? { ...x, echoDelay: echo } : x,
+          );
+        }
         return p.filter((x) => !(x.step === step && x.pitch === pitch));
       }
       return [...p, { step, pitch, echoDelay: echo }];
@@ -85,7 +92,10 @@ export default function Game007_Reverberation() {
       for (const p of pegs) {
         playNote(p.pitch, p.step * stepDur, 0.35);
         if (p.echoDelay > 0) {
-          playNote(p.pitch, (p.step + p.echoDelay) * stepDur, 0.22);
+          // Echo wraps in scoring, so wrap during playback too — otherwise audio
+          // and scoring disagree about where echoes land.
+          const es = (p.step + p.echoDelay) % STEPS;
+          playNote(p.pitch, es * stepDur, 0.22);
         }
       }
     }

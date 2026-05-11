@@ -190,7 +190,7 @@ export default function Game098_Stitchwork() {
 				...cur,
 				thread: t,
 				lastPos: null,
-				threads: cur.threads + (t !== cur.thread || cur.lastPos ? 1 : 0),
+				threads: cur.threads + (cur.lastPos != null ? 1 : 0),
 			},
 		]);
 		setError("");

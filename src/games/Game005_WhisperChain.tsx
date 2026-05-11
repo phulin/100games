@@ -189,6 +189,8 @@ export default function Game005_WhisperChain() {
     setError(null);
 
     let appended: ChainLink = { text: v, author: authorRef.current };
+    let serverRejected = false;
+    let networkFailed = false;
     try {
       const res = await fetch(API, {
         method: "POST",
@@ -202,14 +204,23 @@ export default function Game005_WhisperChain() {
       } else {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         setError(data.error ?? `HTTP ${res.status}`);
+        serverRejected = true;
       }
     } catch {
       setOnline(false);
+      networkFailed = true;
+    }
+
+    // BUG FIX: original code appended locally even on server rejection (e.g. 400
+    // "too long"), masking errors. Bail out so the user can edit and retry.
+    if (serverRejected) {
+      setSubmitting(false);
+      return;
     }
 
     const c = [...chain, appended];
     setChain(c);
-    saveLocal(c);
+    if (!networkFailed) saveLocal(c);
     if (current) {
       const s = similarity(current, v);
       setLastScore(Math.round(s * 100));

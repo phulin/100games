@@ -91,6 +91,7 @@ export default function Game080_Conducting() {
 	const last = useRef<number | null>(null);
 	const accSampler = useRef(0);
 	const keyRef = useRef<{ section: number; vol: number }>({ section: -1, vol: 0 });
+	const replayingRef = useRef(false);
 
 	const audioCtx = useRef<AudioContext | null>(null);
 	const oscs = useRef<
@@ -103,6 +104,7 @@ export default function Game080_Conducting() {
 			const r = containerRef.current.getBoundingClientRect();
 			mouseRef.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
 			mouseRef.current.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / r.height));
+			keyRef.current.section = -1;
 		};
 		const onTouch = (e: TouchEvent) => {
 			if (!containerRef.current || !e.touches[0]) return;
@@ -110,10 +112,12 @@ export default function Game080_Conducting() {
 			const t = e.touches[0];
 			mouseRef.current.x = Math.max(0, Math.min(1, (t.clientX - r.left) / r.width));
 			mouseRef.current.y = Math.max(0, Math.min(1, 1 - (t.clientY - r.top) / r.height));
+			keyRef.current.section = -1;
 		};
 		const onKey = (e: KeyboardEvent) => {
 			const map: Record<string, number> = { "1": 0, "2": 1, "3": 2, "4": 3 };
 			if (map[e.key] !== undefined) keyRef.current.section = map[e.key];
+			if (e.key === "Escape" || e.key === "0") keyRef.current.section = -1;
 			if (e.key === "ArrowUp") keyRef.current.vol = Math.min(1, keyRef.current.vol + 0.1);
 			if (e.key === "ArrowDown") keyRef.current.vol = Math.max(0, keyRef.current.vol - 0.1);
 		};
@@ -129,6 +133,18 @@ export default function Game080_Conducting() {
 
 	const start = (replayMode = false) => {
 		if (playing) return;
+		replayingRef.current = replayMode;
+		if (audioCtx.current) {
+			try {
+				oscs.current.forEach((osc) => {
+					try { osc.o.stop(); } catch {}
+					try { osc.o2?.stop(); } catch {}
+				});
+				audioCtx.current.close().catch(() => {});
+			} catch {}
+			audioCtx.current = null;
+			oscs.current = [];
+		}
 		try {
 			audioCtx.current = new AudioContext();
 			oscs.current = SECTIONS.map((s) => {
@@ -177,7 +193,10 @@ export default function Game080_Conducting() {
 				accSampler.current += dt;
 				if (accSampler.current >= 1 / SAMPLES_PER_SEC) {
 					accSampler.current = 0;
-					let seg = Math.floor(mouseRef.current.x * SECTIONS.length);
+					let seg = Math.min(
+						SECTIONS.length - 1,
+						Math.floor(mouseRef.current.x * SECTIONS.length),
+					);
 					let vol = mouseRef.current.y;
 					if (keyRef.current.section >= 0) {
 						seg = keyRef.current.section;
@@ -187,16 +206,20 @@ export default function Game080_Conducting() {
 						DURATION * SAMPLES_PER_SEC - 1,
 						Math.floor(nt * SAMPLES_PER_SEC),
 					);
-					setPlayed((p) =>
-						p.map((arr, si) => {
-							if (si === seg) {
-								const cp = [...arr];
-								cp[idx] = vol;
-								return cp;
-							}
-							return arr;
-						}),
-					);
+					if (replayingRef.current) {
+						vol = (played[seg] && played[seg][idx]) ?? 0;
+					} else {
+						setPlayed((p) =>
+							p.map((arr, si) => {
+								if (si === seg) {
+									const cp = [...arr];
+									cp[idx] = vol;
+									return cp;
+								}
+								return arr;
+							}),
+						);
+					}
 					oscs.current.forEach((osc, si) => {
 						try {
 							const tg = si === seg ? vol * 0.18 : osc.g.gain.value * 0.7 || 0;
@@ -215,22 +238,25 @@ export default function Game080_Conducting() {
 				}
 				if (nt >= DURATION) {
 					setPlaying(false);
-					let err = 0;
-					for (let s = 0; s < SECTIONS.length; s++) {
-						for (let i = 0; i < target[s].length; i++) {
-							err += Math.abs(target[s][i] - played[s][i]);
+					if (!replayingRef.current) {
+						let err = 0;
+						for (let s = 0; s < SECTIONS.length; s++) {
+							for (let i = 0; i < target[s].length; i++) {
+								err += Math.abs(target[s][i] - played[s][i]);
+							}
+						}
+						const totalSamples = SECTIONS.length * DURATION * SAMPLES_PER_SEC;
+						const sc = Math.max(0, Math.round(100 - (err / totalSamples) * 100));
+						setScore(sc);
+						setReplay(played);
+						if (sc > best) {
+							setBest(sc);
+							try {
+								localStorage.setItem(BEST_KEY, String(sc));
+							} catch {}
 						}
 					}
-					const totalSamples = SECTIONS.length * DURATION * SAMPLES_PER_SEC;
-					const sc = Math.max(0, Math.round(100 - (err / totalSamples) * 100));
-					setScore(sc);
-					setReplay(played);
-					if (sc > best) {
-						setBest(sc);
-						try {
-							localStorage.setItem(BEST_KEY, String(sc));
-						} catch {}
-					}
+					replayingRef.current = false;
 					oscs.current.forEach((osc) => {
 						try {
 							osc.g.gain.linearRampToValueAtTime(

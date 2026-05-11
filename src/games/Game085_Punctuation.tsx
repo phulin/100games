@@ -170,6 +170,7 @@ export default function Game085_Punctuation() {
 		const cur = PUNCT_OPTIONS.indexOf(m[i]);
 		m[i] = PUNCT_OPTIONS[(cur + 1) % PUNCT_OPTIONS.length];
 		setMarks(m);
+		if (checked) setChecked(false);
 		tick();
 	};
 
@@ -192,6 +193,7 @@ export default function Game085_Punctuation() {
 	};
 
 	const check = () => {
+		if (checked && correct) return;
 		setChecked(true);
 		if (correct) {
 			setStreak(streak + 1);

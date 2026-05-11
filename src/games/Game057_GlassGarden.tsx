@@ -140,6 +140,7 @@ export default function GlassGarden() {
 	const [time, setTime] = useState(60);
 	const [over, setOver] = useState(false);
 	const [weather, setWeather] = useState<Weather>("calm");
+	const weatherRef = useRef<Weather>("calm");
 	const weatherUntilRef = useRef(0);
 	const [hoverId, setHoverId] = useState<number | null>(null);
 	const rafRef = useRef(0);
@@ -162,11 +163,16 @@ export default function GlassGarden() {
 		setTime(60);
 		setOver(false);
 		setWeather("calm");
+		weatherRef.current = "calm";
 		weatherUntilRef.current = 0;
 		prevAliveRef.current = new Set(fresh.filter((p) => p.alive).map((p) => p.id));
 		prevBloomedRef.current = new Set();
 		weatherRngRef.current = mulberry32(hashStr(`gg-weather:${seed}`));
 	}, [seed]);
+
+	useEffect(() => {
+		weatherRef.current = weather;
+	}, [weather]);
 
 	useEffect(() => {
 		let last = performance.now();
@@ -181,12 +187,16 @@ export default function GlassGarden() {
 					if (roll < 0.2) w = "rain";
 					else if (roll < 0.35) w = "drought";
 					setWeather(w);
+					weatherRef.current = w;
 					weatherUntilRef.current = now + 4000 + rng() * 4000;
 				}
 
+				const justDied: number[] = [];
+				const justBloomed: number[] = [];
 				setPlants((ps) => {
-					const rainBoost = weather === "rain" ? 0.05 : 0;
-					const droughtMult = weather === "drought" ? 1.9 : 1;
+					const w = weatherRef.current;
+					const rainBoost = w === "rain" ? 0.05 : 0;
+					const droughtMult = w === "drought" ? 1.9 : 1;
 					const next = ps.map((p) => {
 						if (!p.alive) return p;
 						const nw = p.water - dt * p.drainRate * droughtMult + dt * rainBoost;
@@ -200,15 +210,17 @@ export default function GlassGarden() {
 					for (const p of next) {
 						if (!p.alive && prevAliveRef.current.has(p.id)) {
 							prevAliveRef.current.delete(p.id);
-							shatter();
+							justDied.push(p.id);
 						}
 						if (p.alive && p.growth >= 1 && !prevBloomedRef.current.has(p.id)) {
 							prevBloomedRef.current.add(p.id);
-							chime(523.25 + (p.id % 5) * 80);
+							justBloomed.push(p.id);
 						}
 					}
 					return next;
 				});
+				for (let i = 0; i < justDied.length; i++) shatter();
+				for (const id of justBloomed) chime(523.25 + (id % 5) * 80);
 				setTime((t) => {
 					const nt = t - dt;
 					if (nt <= 0) {
@@ -222,7 +234,7 @@ export default function GlassGarden() {
 		};
 		rafRef.current = requestAnimationFrame(loop);
 		return () => cancelAnimationFrame(rafRef.current);
-	}, [over, weather, shatter, chime]);
+	}, [over, shatter, chime]);
 
 	useEffect(() => {
 		const fully = plants.filter((p) => p.alive && p.growth >= 1).length;

@@ -172,14 +172,19 @@ export default function Game086_Sleight() {
 			const type = (Object.keys(TYPE_KEY) as PromptType[]).find((t) => TYPE_KEY[t] === k);
 			if (!type) return;
 			ev.preventDefault();
+			// Pick the closest-in-time unhit prompt of this type within window*1.5.
+			let bestIdx = -1;
+			let bestOff = Infinity;
 			for (let i = 0; i < prompts.length; i++) {
 				if (prompts[i].type !== type) continue;
 				if (hits.some((h) => h.idx === i)) continue;
-				if (Math.abs(time - prompts[i].t) < cfg.window * 1.5) {
-					clickPrompt(i);
-					return;
+				const off = Math.abs(time - prompts[i].t);
+				if (off < cfg.window * 1.5 && off < bestOff) {
+					bestOff = off;
+					bestIdx = i;
 				}
 			}
+			if (bestIdx >= 0) clickPrompt(bestIdx);
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
@@ -196,7 +201,9 @@ export default function Game086_Sleight() {
 	};
 
 	const goodHits = hits.filter((h) => h.ok).length;
-	const suspicion = (hits.length - goodHits) + (running ? 0 : prompts.length - goodHits);
+	// Only penalise un-hit prompts after the performance is over; before then
+	// the meter would otherwise start at 10%, which is misleading.
+	const suspicion = (hits.length - goodHits) + (done ? prompts.length - goodHits : 0);
 	const confPct = Math.max(0, 100 - suspicion * (90 / prompts.length));
 
 	const typeColor: Record<PromptType, string> = {

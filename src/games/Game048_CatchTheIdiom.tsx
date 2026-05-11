@@ -134,8 +134,13 @@ export default function Game048_CatchTheIdiom() {
 
 	const submit = () => {
 		if (over) return;
-		const norm = input.trim().toLowerCase();
-		if (norm === ROUNDS[round].idiom) {
+		// Normalize aggressively: strip punctuation, collapse whitespace, lower-case.
+		// Without this, "Kick the bucket." or "kick  the bucket" wrongly fail.
+		const normalize = (s: string) =>
+			s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+		const norm = normalize(input);
+		if (!norm) return; // ignore empty Enter presses instead of flashing "Not quite"
+		if (norm === normalize(ROUNDS[round].idiom)) {
 			setScore((s) => s + Math.ceil(timeLeft * 10));
 			next();
 		} else {

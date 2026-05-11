@@ -247,16 +247,20 @@ export default function Game076_KnapsackHeist() {
 
 	const toggle = (id: number) => {
 		if (escaped) return;
-		const cp = new Set(picked);
-		const taking = !cp.has(id);
-		if (taking) cp.add(id);
-		else cp.delete(id);
 		const item = items[id];
+		if (!item) return;
+		setPicked((prev) => {
+			const cp = new Set(prev);
+			const taking = !cp.has(id);
+			if (taking) {
+				cp.add(id);
+				setTime((t) => t + item.noise * 0.15);
+			} else {
+				cp.delete(id);
+			}
+			return cp;
+		});
 		audio.current.click(item.noise);
-		if (taking) {
-			setTime((t) => Math.min(timeLimit, t + item.noise * 0.15));
-		}
-		setPicked(cp);
 	};
 
 	const flee = () => {

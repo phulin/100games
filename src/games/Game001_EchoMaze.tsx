@@ -107,10 +107,11 @@ export default function Game001_EchoMaze() {
   const enemyCount = difficulty === "easy" ? 1 : difficulty === "hard" ? 3 : 2;
   const makeEnemies = () => {
     const list: { x: number; y: number; tx: number; ty: number; cooldown: number }[] = [];
+    // BUG FIX: original spawned enemy on exit cell. Use non-exit spawn points.
     const spots: [number, number][] = [
-      [W - 2, H - 2],
       [W - 2, 1],
       [1, H - 2],
+      [Math.floor(W / 2), Math.floor(H / 2)],
     ];
     for (let i = 0; i < enemyCount; i++) {
       const [x, y] = spots[i];
@@ -184,6 +185,11 @@ export default function Game001_EchoMaze() {
     }
   };
 
+  const wonRef = useRef(won);
+  wonRef.current = won;
+  const caughtRef = useRef(caught);
+  caughtRef.current = caught;
+
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
@@ -196,7 +202,9 @@ export default function Game001_EchoMaze() {
       pingRingsRef.current = pingRingsRef.current
         .map((r) => ({ ...r, t: r.t + dt }))
         .filter((r) => r.t < 2);
-      if (enemyTick > enemyDelay) {
+      // BUG FIX: don't continue moving enemies (or trigger catches) after the
+      // game ends — original loop kept running forever.
+      if (enemyTick > enemyDelay && !wonRef.current && !caughtRef.current) {
         enemyTick = 0;
         for (const en of enemiesRef.current) {
           if (en.cooldown > 0) {
@@ -221,7 +229,12 @@ export default function Game001_EchoMaze() {
               break;
             }
           }
-          if (en.x === playerRef.current.x && en.y === playerRef.current.y) {
+          if (
+            !wonRef.current &&
+            !caughtRef.current &&
+            en.x === playerRef.current.x &&
+            en.y === playerRef.current.y
+          ) {
             setCaught(true);
             beep(120, 0.4, "sawtooth", 0.18);
             setTimeout(() => beep(70, 0.5, "sawtooth", 0.18), 120);

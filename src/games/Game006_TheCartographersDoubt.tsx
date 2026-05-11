@@ -66,10 +66,12 @@ export default function Game006_TheCartographersDoubt() {
         const [ox, oy] = ok.split(",").map(Number);
         const dx = x - ox;
         const dy = y - oy;
-        const ew = dx > 0 ? "east" : dx < 0 ? "west" : "near";
+        const ew = dx > 0 ? "east" : dx < 0 ? "west" : "";
         const ns = dy > 0 ? "south" : dy < 0 ? "north" : "";
+        const dir = [ns, ew].filter(Boolean).join("-") || "near";
+        const dist = Math.abs(dx) + Math.abs(dy);
         reps.push({
-          text: `"${Math.abs(dx) + Math.abs(dy)} leagues ${ns} ${ew} of the ${of_}, a ${f}."`,
+          text: `"${dist} ${dist === 1 ? "league" : "leagues"} ${dir} of the ${of_}, a ${f}."`,
           truthful: true,
         });
       }

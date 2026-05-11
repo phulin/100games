@@ -18,8 +18,8 @@ function genRiver(): Cell[][] {
     for (let x = 0; x < GRID_W; x++) {
       // banks on top/bottom
       const isLand = y < 2 || y >= GRID_H - 2;
-      // random thickness base 0..0.3 in water
-      const t = isLand ? 1 : Math.random() * 0.2;
+      // Safe baseline thickness; thin hazards are carved below.
+      const t = isLand ? 1 : 0.25 + Math.random() * 0.45;
       row.push({ thickness: t, isLand, isObstacle: false });
     }
     c.push(row);
@@ -34,6 +34,21 @@ function genRiver(): Cell[][] {
           const nx = ix + dx,
             ny = iy + dy;
           if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) c[ny][nx].isObstacle = true;
+        }
+      }
+    }
+  }
+  // Carve thin-ice hazard patches.
+  for (let i = 0; i < 14; i++) {
+    const tx = 4 + Math.floor(Math.random() * (GRID_W - 8));
+    const ty = 3 + Math.floor(Math.random() * (GRID_H - 6));
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = tx + dx,
+          ny = ty + dy;
+        if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) {
+          const cell = c[ny][nx];
+          if (!cell.isLand && !cell.isObstacle) cell.thickness = Math.random() * 0.16;
         }
       }
     }
@@ -72,8 +87,8 @@ export default function Game009_Frostline() {
     const loop = (t: number) => {
       const dt = (t - last) / 1000;
       last = t;
-      elapsed += dt;
       if (!stateRef.current.done) {
+        elapsed += dt;
         // freeze process: thickness grows over time
         for (let y = 2; y < GRID_H - 2; y++) {
           for (let x = 0; x < GRID_W; x++) {
@@ -98,27 +113,26 @@ export default function Game009_Frostline() {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         if (p.x < 0) p.x = 0;
+        if (p.x > W) p.x = W;
         if (p.y < 0) p.y = 0;
         if (p.y > H) p.y = H;
         trail.push({ x: p.x, y: p.y });
         if (trail.length > 200) trail.shift();
-        // check current cell
-        const gx = Math.floor(p.x / CELL_W);
-        const gy = Math.floor(p.y / CELL_H);
-        if (gx >= 0 && gx < GRID_W && gy >= 0 && gy < GRID_H) {
-          const c = grid[gy][gx];
-          if (c.isObstacle) {
-            stateRef.current.done = true;
-            stateRef.current.message = "Crashed into obstacle.";
-          } else if (!c.isLand && c.thickness < 0.18) {
-            stateRef.current.done = true;
-            stateRef.current.message = "Fell through thin ice!";
-          }
-          if (p.x >= W - 8) {
-            stateRef.current.done = true;
-            stateRef.current.won = true;
-            stateRef.current.message = `Made it across in ${elapsed.toFixed(1)}s.`;
-          }
+        // check current cell (clamp index so right-edge win still fires)
+        const gx = Math.max(0, Math.min(GRID_W - 1, Math.floor(p.x / CELL_W)));
+        const gy = Math.max(0, Math.min(GRID_H - 1, Math.floor(p.y / CELL_H)));
+        const c = grid[gy][gx];
+        if (c.isObstacle) {
+          stateRef.current.done = true;
+          stateRef.current.message = "Crashed into obstacle.";
+        } else if (!c.isLand && c.thickness < 0.18) {
+          stateRef.current.done = true;
+          stateRef.current.message = "Fell through thin ice!";
+        }
+        if (p.x >= W - 8) {
+          stateRef.current.done = true;
+          stateRef.current.won = true;
+          stateRef.current.message = `Made it across in ${elapsed.toFixed(1)}s.`;
         }
       }
       // draw
@@ -170,11 +184,25 @@ export default function Game009_Frostline() {
   }, [grid]);
 
   const reset = () => {
-    // re-randomize thicknesses
+    // re-randomize: safe baseline + sparse thin-ice hazards (mirrors initial gen)
     for (let y = 2; y < GRID_H - 2; y++) {
       for (let x = 0; x < GRID_W; x++) {
         const c = grid[y][x];
-        if (!c.isObstacle && !c.isLand) c.thickness = Math.random() * 0.2;
+        if (!c.isObstacle && !c.isLand) c.thickness = 0.25 + Math.random() * 0.45;
+      }
+    }
+    for (let i = 0; i < 14; i++) {
+      const tx = 4 + Math.floor(Math.random() * (GRID_W - 8));
+      const ty = 3 + Math.floor(Math.random() * (GRID_H - 6));
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = tx + dx,
+            ny = ty + dy;
+          if (nx >= 0 && nx < GRID_W && ny >= 0 && ny < GRID_H) {
+            const cell = grid[ny][nx];
+            if (!cell.isLand && !cell.isObstacle) cell.thickness = Math.random() * 0.16;
+          }
+        }
       }
     }
     playerRef.current = { x: 20, y: H / 2, vx: 0, vy: 0 };

@@ -81,7 +81,10 @@ export default function Game004_LiarsCompass() {
   const npcCount = difficulty === "easy" ? 3 : difficulty === "hard" ? 6 : 4;
   const GRID = difficulty === "hard" ? 9 : 7;
 
-  const seed = useMemo(() => fnv(dayKey() + difficulty), [difficulty]);
+  // BUG FIX: original seed was locked to (date, difficulty), so "New mystery"
+  // never actually produced a new puzzle. A salt rerolls the seed on demand.
+  const [salt, setSalt] = useState(0);
+  const seed = useMemo(() => fnv(dayKey() + difficulty + ":" + salt), [difficulty, salt]);
   const rng = useMemo(() => mulberry32(seed), [seed]);
   const treasure = useMemo(() => {
     return { x: Math.floor(rng() * GRID), y: Math.floor(rng() * GRID) };
@@ -180,6 +183,7 @@ export default function Game004_LiarsCompass() {
     setResolved(false);
     setRound(1);
     setWarmer(null);
+    setSalt((s) => s + 1);
   };
 
   return (

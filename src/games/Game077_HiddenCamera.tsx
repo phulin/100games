@@ -204,8 +204,9 @@ export default function Game077_HiddenCamera() {
 		setSubmitted(false);
 		setHintsUsed(0);
 		setRevealedHints({});
+		setPlaying(false);
 		playedEvents.current = new Set();
-	}, [seed]);
+	}, [seed, difficulty]);
 
 	useEffect(() => {
 		if (!playing) return;
@@ -246,6 +247,7 @@ export default function Game077_HiddenCamera() {
 	};
 
 	const setGuess = (id: string) => {
+		if (submitted) return;
 		setGuesses((g) => ({ ...g, [id]: time }));
 	};
 

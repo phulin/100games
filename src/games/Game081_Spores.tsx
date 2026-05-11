@@ -121,6 +121,10 @@ export default function Game081_Spores() {
 	const [ended, setEnded] = useState<null | { saved: number; total: number; score: number }>(null);
 	const gridRef = useRef(grid);
 	gridRef.current = grid;
+	const breaksRef = useRef(breaks);
+	breaksRef.current = breaks;
+	const waterRef = useRef(water);
+	waterRef.current = water;
 	const rngRef = useRef(mulberry32(seed ^ 0x9e3779b9));
 
 	const totalTargets = initial.totalTargets;
@@ -173,14 +177,14 @@ export default function Game081_Spores() {
 			setTick((t) => t + 1);
 			if (!anyBurning || newBurns.length === 0) {
 				const saved = g.filter((c) => c === "target").length;
-				const score = saved * 100 + breaks * 5 + water * 8;
+				const score = saved * 100 + breaksRef.current * 5 + waterRef.current * 8;
 				setRunning(false);
 				setEnded({ saved, total: totalTargets, score });
 				blip(saved === totalTargets ? 660 : 220, 0.4, "triangle", 0.08);
 			}
 		}, TICK_MS);
 		return () => clearInterval(id);
-	}, [running, breaks, water, totalTargets, wind.dx, wind.dy, wind.strength]);
+	}, [running, totalTargets, wind.dx, wind.dy, wind.strength]);
 
 	const useTool = (i: number) => {
 		if (ended) return;
@@ -202,8 +206,10 @@ export default function Game081_Spores() {
 			}
 		} else if (tool === "water") {
 			if (water <= 0) return;
-			if (c === "burning" || c === "empty" || c === "target") {
-				const g = grid.slice();
+			const base = gridRef.current;
+			const cc = base[i];
+			if (cc === "burning" || cc === "empty" || cc === "target") {
+				const g = base.slice();
 				const x = i % COLS;
 				const y = (i / COLS) | 0;
 				for (let dy = -1; dy <= 1; dy++) {

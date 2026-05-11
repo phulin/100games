@@ -116,6 +116,8 @@ export default function StarCartographer() {
 	const [peeks, setPeeks] = useState(0);
 	const [msg, setMsg] = useState("");
 	const [twinkleTick, setTwinkleTick] = useState(0);
+	const completedRef = useRef(false);
+	const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const audio = useAudio();
 	const [best, setBest] = useState<number>(() => {
 		try {
@@ -126,10 +128,16 @@ export default function StarCartographer() {
 	});
 
 	useEffect(() => {
+		completedRef.current = false;
 		setShown(true);
 		setProgress(0);
 		setMsg("");
-		const id = setTimeout(() => setShown(false), 3500);
+		if (revealTimeoutRef.current) clearTimeout(revealTimeoutRef.current);
+		const id = setTimeout(() => {
+			setShown(false);
+			revealTimeoutRef.current = null;
+		}, 3500);
+		revealTimeoutRef.current = id;
 		return () => clearTimeout(id);
 	}, [pattern]);
 
@@ -139,7 +147,7 @@ export default function StarCartographer() {
 	}, []);
 
 	function click(s: Star) {
-		if (shown) return;
+		if (shown || completedRef.current) return;
 		if (s.idx >= 1000) {
 			audio.wrong();
 			setMistakes((m) => m + 1);
@@ -151,6 +159,8 @@ export default function StarCartographer() {
 			audio.chime(440 + s.idx * 60, 0.3);
 			const np = progress + 1;
 			if (np >= pattern.length) {
+				completedRef.current = true;
+				setProgress(np);
 				const earned = Math.max(0, level * 20 - mistakes * 5 - peeks * 8);
 				setScore((sc) => sc + earned);
 				audio.complete();
@@ -176,7 +186,11 @@ export default function StarCartographer() {
 		if (shown) return;
 		setPeeks((p) => p + 1);
 		setShown(true);
-		setTimeout(() => setShown(false), 1800);
+		if (revealTimeoutRef.current) clearTimeout(revealTimeoutRef.current);
+		revealTimeoutRef.current = setTimeout(() => {
+			setShown(false);
+			revealTimeoutRef.current = null;
+		}, 1800);
 	}
 
 	function newSeed() {

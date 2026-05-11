@@ -361,6 +361,17 @@ export default function Wordweaver() {
 		setWord(candidate);
 		setLetter(letterFromRng(rngRef.current));
 		setMsg(`Nice. "${candidate}" — keep going.`);
+		// Persist a new "best" on each successful add too, not only at
+		// game-over. Previously a player who closed the tab mid-chain
+		// lost their longest-word progress.
+		if (candidate.length > best) {
+			setBest(candidate.length);
+			try {
+				localStorage.setItem("wordweaver_best", String(candidate.length));
+			} catch {
+				/* ignore */
+			}
+		}
 		beep(523, 0.05, "sine", 0.1);
 		setTimeout(() => beep(659, 0.05, "sine", 0.1), 50);
 	};
@@ -389,7 +400,22 @@ export default function Wordweaver() {
 	};
 
 	const reset = () => {
-		setSeed(mode === "daily" ? dailySeed() : (Math.random() * 1e9) >>> 0);
+		if (mode === "daily") {
+			// In daily mode the seed is identical all day; calling setSeed
+			// with the same value wouldn't trigger the [seed, startWord]
+			// reset effect, so the player couldn't retry the daily.
+			const r = mulberry32(seed);
+			rngRef.current = r;
+			setWord(startWord);
+			setHistory([]);
+			setLetter(letterFromRng(r));
+			setOver(false);
+			setRerolls(3);
+			setMsg("Add to front or back, keep it a word.");
+			setSubmitted(false);
+		} else {
+			setSeed((Math.random() * 1e9) >>> 0);
+		}
 	};
 
 	const switchMode = (m: "daily" | "free") => {
@@ -420,9 +446,13 @@ export default function Wordweaver() {
 			if (res.ok) {
 				setSubmitted(true);
 				refreshLb();
+			} else {
+				// Surface API failures so the player knows their submit
+				// didn't go through, instead of silently doing nothing.
+				setMsg("Submit failed — try again.");
 			}
 		} catch {
-			/* ignore */
+			setMsg("Submit failed — network error.");
 		}
 	};
 

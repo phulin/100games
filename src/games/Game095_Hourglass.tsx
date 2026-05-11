@@ -177,8 +177,14 @@ export default function Game095_Hourglass() {
 
 	useEffect(() => {
 		function down(e: KeyboardEvent) {
-			if (e.key === "ArrowLeft") keysRef.current.left = true;
-			if (e.key === "ArrowRight") keysRef.current.right = true;
+			if (e.key === "ArrowLeft") {
+				keysRef.current.left = true;
+				e.preventDefault();
+			}
+			if (e.key === "ArrowRight") {
+				keysRef.current.right = true;
+				e.preventDefault();
+			}
 			if (e.key === " ") {
 				e.preventDefault();
 				setRunning((r) => !r);
@@ -213,9 +219,12 @@ export default function Game095_Hourglass() {
 			if (keysRef.current.left) accel -= 2.4;
 			if (keysRef.current.right) accel += 2.4;
 			tiltVelRef.current = (tiltVelRef.current + accel * dt) * 0.92;
-			setTilt((tl) =>
-				Math.max(-1, Math.min(1, tl + tiltVelRef.current * dt)),
+			const newTilt = Math.max(
+				-1,
+				Math.min(1, tiltRef.current + tiltVelRef.current * dt),
 			);
+			tiltRef.current = newTilt;
+			setTilt(newTilt);
 
 			setC((s) => {
 				const tlt = tiltRef.current;
@@ -246,7 +255,12 @@ export default function Game095_Hourglass() {
 					b1: s.b1 + midLToB1 + midRToB1,
 					b2: s.b2 + midRToB2,
 				};
-				if (ns.top <= 0.01 && ns.midL <= 0.01 && ns.midR <= 0.01) {
+				if (
+					ns.top <= 0.01 &&
+					ns.midL <= 0.01 &&
+					ns.midR <= 0.01 &&
+					(s.top > 0.01 || s.midL > 0.01 || s.midR > 0.01)
+				) {
 					ns.top = 0;
 					ns.midL = 0;
 					ns.midR = 0;
@@ -443,7 +457,9 @@ export default function Game095_Hourglass() {
 							step={0.01}
 							value={tilt}
 							onChange={(e) => {
-								setTilt(parseFloat(e.target.value));
+								const v = parseFloat(e.target.value);
+								tiltRef.current = v;
+								setTilt(v);
 								tiltVelRef.current = 0;
 							}}
 							style={{ width: 240 }}
